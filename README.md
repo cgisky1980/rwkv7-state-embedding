@@ -1,4 +1,4 @@
-# RWKV-7 State Semantic Embedding: A Unified Supervised Projection Framework
+# RWKV-7 Hidden State Semantic Embedding: A Unified Supervised Projection Framework
 
 This repository systematically explores how to extract semantic embeddings from RWKV-7 hidden state, based on the **albatross official inference engine** (unmodified), covering three standard evaluation tasks.
 
@@ -8,8 +8,8 @@ This repository systematically explores how to extract semantic embeddings from 
 
 | Task | Method | Metric | Comparison |
 |------|--------|--------|------------|
-| **Semantic Similarity** | Supervised Projection (48.1k pairs) + AnglE + 5-seed | Spearman=**0.8504** | Approaching bge-large 0.83-0.85 |
-| **Topic Clustering (supervised)** | Supervised Contrastive Projection + KMeans | v_measure=**0.8466** | Unsupervised baseline 0.29, unsupervised SOTA 0.57 |
+| **Semantic Similarity** | Supervised Projection (48.1k pairs) + AnglE + 5-seed | Spearman=**0.8504** | Comparable to supervised bge-large-en-v1.5 (~0.85) and all-MiniLM-L6-v2 (~0.86) |
+| **Topic Clustering (supervised)** | Supervised Contrastive Projection + KMeans | v_measure=**0.8466** | Unsupervised baseline 0.29, 30+ unsupervised methods best 0.33 |
 | **Task Classification** | Hidden + MLP | val_acc=**0.9392** | - |
 
 ## Key Insight
@@ -201,7 +201,7 @@ STS scaling from 5.7k to 48.1k (8x) yields +47% improvement, indicating albatros
 
 ```bibtex
 @misc{rwkv-state-embedding-2026,
-  title={RWKV-7 State Semantic Embedding: A Unified Supervised Projection Framework},
+  title={RWKV-7 Hidden State Semantic Embedding: A Unified Supervised Projection Framework},
   author={RWKV Community},
   year={2026},
   url={https://github.com/cgisky1980/rwkv7-state-embedding}

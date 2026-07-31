@@ -1,8 +1,8 @@
-# RWKV-7 State Semantic Embedding: A Unified Supervised Projection Framework for Three Tasks
+# RWKV-7 Hidden State Semantic Embedding: A Unified Supervised Projection Framework for Three Tasks
 
 ## Abstract
 
-RWKV-7, as a modern linear RNN architecture, possesses an internal WKV state—a recurrently accumulated key-value memory matrix rich in sequential semantic information. However, the hidden state extracted by albatross (BlinkDL's inference engine) exhibits severe anisotropy, preventing unsupervised methods (KMeans, cosine similarity) from effectively mining its semantic information—achieving only v_measure=0.29 on 20 Newsgroups clustering and Spearman=0.46 on STS-B semantic similarity. This paper presents a key insight: **the features contain semantic information (supervised MLP classification achieves 0.94), but unsupervised methods cannot extract it; supervised data is needed to train task-specific projectors to unlock the semantic potential of hidden states**. Based on this insight, all three tasks reach current SOTA levels: **(1) Semantic Similarity**: trained an STS-specific projector using 48.1k labeled pairs from NLI/STS/SICK-R, achieving Spearman=0.85, approaching SOTA of dedicated embedding models like bge-large-en-v1.5 (0.83-0.85); **(2) Topic Clustering**: trained a supervised contrastive projector using 38.1k labeled samples from 20 Newsgroups, achieving v_measure=0.85, far exceeding the unsupervised baseline (0.29) and the 7 categories and 30+ unsupervised methods systematically compared (best 0.33); **(3) Task Classification**: achieved val_acc=0.94 using Hidden+MLP. As a contrast, we systematically verified that unsupervised methods (KMeans/PCA/UMAP/Whitening/DeepCluster etc., 30+ methods) peak at only 0.33, far below the unsupervised MTEB SOTA of 0.57, empirically supporting the necessity of supervised projection. All three tasks are based on the albatross inference engine (source code unmodified), a 0.4B RWKV-7 model, and CPU training (parameters ~0.86M), with all code open-source and reproducible.
+RWKV-7, as a modern linear RNN architecture, contains two levels of internal states: (1) **WKV state**—a recurrent memory matrix shaped `[num_heads, key_dim, value_dim]`, the core of the Delta Rule; (2) **Hidden state**—the output vector of each TMix layer. This paper finds that the hidden state extracted by albatross (BlinkDL's inference engine) contains rich semantic information but exhibits severe anisotropy, preventing unsupervised methods (KMeans, cosine similarity) from effectively mining it—achieving only v_measure=0.29 on 20 Newsgroups clustering and Spearman=0.46 on STS-B semantic similarity. As a comparison, we also tried various aggregation methods on WKV state (Q-Readout, row_sum, diag, etc.), yielding even worse clustering performance (best 0.11), indicating that hidden state is more suitable for semantic extraction than WKV state. This paper presents a key insight: **hidden state contains semantic information (supervised MLP classification achieves 0.94), but unsupervised methods cannot extract it; supervised data is needed to train task-specific projectors to unlock its semantic potential**. Based on this insight, all three tasks achieve results comparable to supervised embedding models: **(1) Semantic Similarity**: trained an STS-specific projector using 48.1k labeled pairs from NLI/STS/SICK-R, achieving Spearman=0.85, on par with supervised embedding models like bge-large-en-v1.5 (STS-B ~0.85); **(2) Topic Clustering**: trained a supervised contrastive projector using 38.1k labeled samples from 20 Newsgroups, achieving v_measure=0.85, far exceeding the unsupervised baseline (0.29) and the 7 categories and 30+ unsupervised methods systematically compared (best 0.33); **(3) Task Classification**: achieved val_acc=0.94 using Hidden+MLP. It should be emphasized that STS and clustering tasks use supervised projectors and are thus supervised methods; the comparison with unsupervised baselines is only to validate the claim that "hidden state requires supervised projection," not to claim superiority over unsupervised methods. All three tasks are based on the albatross inference engine (source code unmodified), a 0.4B RWKV-7 model, and CPU training (parameters ~0.86M), with all code open-source and reproducible.
 
 **Keywords**: RWKV-7, Albatross, Supervised Projection, Semantic Embedding, Anisotropy
 
@@ -12,7 +12,12 @@ RWKV-7, as a modern linear RNN architecture, possesses an internal WKV state—a
 
 ### 1.1 Background
 
-RWKV-7 [1] is a modern linear RNN that achieves O(L) complexity sequence modeling through the Delta Rule [2]. Its core is the WKV state—a recurrent memory matrix shaped `[num_heads, key_dim, value_dim]`. Albatross [3] is an efficient inference engine developed by BlinkDL, providing CUDA-accelerated WKV kernels and batch concurrent inference capability.
+RWKV-7 [1] is a modern linear RNN that achieves O(L) complexity sequence modeling through the Delta Rule [2]. It contains two levels of internal states:
+
+- **WKV state** $S \in \mathbb{R}^{\text{num\_heads} \times \text{key\_dim} \times \text{value\_dim}}$: recurrent memory matrix, the core of the Delta Rule, recursively updated at each time step
+- **Hidden state** $h \in \mathbb{R}^{\text{hidden\_dim}}$: the output vector of each TMix (time mix) and CMix (channel mix) layer, an intermediate representation of forward propagation
+
+This paper studies the semantic extraction capability of **hidden state**. WKV state was also experimented with as a baseline (§4.3.3), but its clustering performance was much lower than hidden state (0.11 vs 0.29). Albatross [3] is an efficient inference engine developed by BlinkDL, providing CUDA-accelerated WKV kernels and batch concurrent inference capability.
 
 ### 1.2 Problem
 
@@ -30,7 +35,7 @@ The supervised MLP classification achieving 0.94 proves that hidden state does c
 
 1. **Key Insight**: The anisotropy of albatross hidden state can be mitigated through supervised projectors without modifying the inference engine
 2. **Task-Specific Projection**: STS learns similarity ranking (48.1k pairs), clustering learns class separation (38.1k labeled samples)—the two objectives differ and cannot be mixed
-3. **Three Tasks Exceed 0.8**: STS Spearman=0.85, Clustering v_measure=0.85, Classification val_acc=0.94
+3. **Three Tasks Comparable to Supervised Embedding Models**: STS Spearman=0.85 (on par with bge-large-en-v1.5 ~0.85), supervised clustering v_measure=0.85, classification val_acc=0.94. Note that STS and clustering use supervised projectors and are thus supervised methods
 4. **Systematic Unsupervised Comparison**: 7 categories and 30+ unsupervised methods (KMeans/PCA/UMAP/Whitening/DeepCluster) peak at only 0.33, empirically confirming the limitation of unsupervised methods and supporting the necessity of supervised projection
 5. **Pure Python Implementation**: Based on albatross inference engine, bucketed by length for concurrency, 250 samples/s
 
@@ -171,7 +176,20 @@ where $\cos(\theta_i) = \text{emb}_1 \cdot \text{emb}_2$ (embeddings are L2-norm
 | 789 | 0.8385 | 0.8177 | 0.8463 |
 | 1024 | 0.8296 | 0.8126 | **0.8504** |
 
-**Conclusion**: Training data expanded from 5.7k to 48.1k (8x), Spearman improved from 0.58 to 0.85 (+47%), approaching bge-large-en-v1.5's 0.83-0.85.
+**Conclusion**: Training data expanded from 5.7k to 48.1k (8x), Spearman improved from 0.58 to 0.85 (+47%).
+
+**Fair Comparison with Supervised Embedding Models**:
+
+| Method | Type | STS-B Spearman | Parameters |
+|--------|------|----------------|------------|
+| **Ours (RWKV-7 0.4B + Supervised Projection)** | **Supervised** | **0.8504** | **0.86M (projector)** |
+| bge-large-en-v1.5 [12] | Supervised | ~0.85 | 335M |
+| all-MiniLM-L6-v2 [13] | Supervised | ~0.86 | 22M |
+| Unsupervised Hidden cosine | Unsupervised | 0.46 | - |
+
+*Supervised model data source: MTEB Leaderboard [14]. Training data and evaluation splits may differ slightly across models; this is an approximate comparison.*
+
+Our method achieves STS-B Spearman comparable to supervised embedding models like bge-large-en-v1.5 (335M full fine-tuning) with only 0.86M projector parameters (0.4B language model frozen, only projector trained). It should be emphasized that this method requires additional supervised training data (48.1k pairs), and the 0.4B language model parameters are not included in the comparison.
 
 #### 4.3.2 Clustering Task
 
@@ -304,13 +322,13 @@ The optimal τ=0.50 for albatross path is much higher than Rust path's 0.1, root
 
 ## 6. Conclusion
 
-This paper proposes a supervised projection-based framework for RWKV-7 semantic embedding extraction, breaking through 0.8 on three standard tasks:
+This paper proposes a supervised projection-based framework for RWKV-7 hidden state semantic embedding extraction, achieving results comparable to supervised embedding models on three standard tasks:
 
-- **Semantic Similarity**: Spearman=0.8504 (approaching bge-large-en-v1.5's 0.83-0.85)
-- **Topic Clustering (supervised)**: v_measure=0.8466 (unsupervised baseline 0.29, unsupervised MTEB SOTA 0.57)
+- **Semantic Similarity (supervised)**: Spearman=0.8504, on par with supervised embedding models like bge-large-en-v1.5 (~0.85, 335M) and all-MiniLM-L6-v2 (~0.86, 22M), with only 0.86M projector parameters
+- **Topic Clustering (supervised)**: v_measure=0.8466, far exceeding the unsupervised baseline (0.29) and 30+ unsupervised methods (best 0.33)
 - **Task Classification**: val_acc=0.9392
 
-Core insights: albatross hidden state contains semantic information but requires supervised projection to unlock; task-specific projectors cannot be mixed; data scale is the key bottleneck. All methods are based on a 0.4B model, official albatross inference (unmodified), CPU trainable, with parameters < 1M, suitable for edge deployment.
+Core insights: albatross hidden state contains semantic information but requires supervised projection to unlock; task-specific projectors cannot be mixed; data scale is the key bottleneck. WKV state shows much lower clustering performance than hidden state (0.11 vs 0.29), indicating hidden state is more suitable for semantic extraction. All methods are based on a 0.4B model, albatross inference engine (source code unmodified), CPU trainable with ~0.86M parameters, suitable for edge deployment.
 
 ---
 
@@ -335,6 +353,14 @@ Core insights: albatross hidden state contains semantic information but requires
 [9] Gao, T. et al. SimCSE: Simple Contrastive Learning of Sentence Embeddings. EMNLP 2021
 
 [10] Su, J. et al. Whitening Sentence Representations for Better Semantics. arXiv:2103.15316
+
+[11] Reimers, N. and Gurevych, I. Sentence-BERT. EMNLP 2019
+
+[12] Xiao, S. et al. BAAI/bge-large-en-v1.5. https://huggingface.co/BAAI/bge-large-en-v1.5
+
+[13] Wang, W. et al. sentence-transformers/all-MiniLM-L6-v2. https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2
+
+[14] MTEB Leaderboard. https://huggingface.co/spaces/mteb/leaderboard
 
 ---
 

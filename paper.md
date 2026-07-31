@@ -1,8 +1,8 @@
-# RWKV-7 State 语义嵌入：基于监督投影的三任务统一框架
+# RWKV-7 Hidden State 语义嵌入：基于监督投影的三任务统一框架
 
 ## 摘要
 
-RWKV-7 作为现代线性 RNN 架构，其内部 WKV state 是一个递归累积的键值记忆矩阵，蕴含丰富的序列语义信息。然而，albatross（BlinkDL 推理引擎）提取的 hidden state 存在严重的各向异性，无监督方法（KMeans、余弦相似度）无法有效挖掘其语义信息——在 20 Newsgroups 聚类上 v_measure 仅 0.29，STS-B 语义相似度 Spearman 仅 0.46。本文提出一个关键洞察：**特征中蕴含语义信息（监督 MLP 分类达 0.94），但无监督方法无法提取，需要用监督数据训练专用投影器（Projection）来释放 hidden state 的语义潜力**。基于此洞察，三任务均达到当前 SOTA 水平：**(1) 语义相似度**：用 NLI/STS/SICK-R 共 48.1k 标注对训练 STS 专用投影器，Spearman=0.85，接近 bge-large-en-v1.5（0.83-0.85）等专用嵌入模型 SOTA；**(2) 主题聚类**：用 20 Newsgroups 38.1k 标注样本训练监督对比投影器，v_measure=0.85，远超无监督 baseline（0.29）及系统对比的 7 类 30+ 种无监督方法（最高 0.33）；**(3) 任务分类**：用 Hidden+MLP 达 val_acc=0.94。作为对比，我们系统验证了无监督方法（KMeans/PCA/UMAP/Whitening/DeepCluster 等 30+ 种）最高仅 0.33，远低于 MTEB 无监督 SOTA 0.57，实证支撑监督投影的必要性。三任务均基于 albatross 推理引擎（无修改源码）、0.4B RWKV-7 模型、CPU 训练（参数量 ~0.86M），所有代码开源可复现。
+RWKV-7 作为现代线性 RNN 架构，其核心包含两个层级的内部状态：(1) **WKV state**——形状为 `[num_heads, key_dim, value_dim]` 的递归记忆矩阵，是 Delta Rule 的核心；(2) **Hidden state**——每层 TMix 的输出向量。本文研究发现，albatross（BlinkDL 推理引擎）提取的 hidden state 蕴含丰富的语义信息，但存在严重的各向异性，无监督方法（KMeans、余弦相似度）无法有效挖掘——在 20 Newsgroups 聚类上 v_measure 仅 0.29，STS-B 语义相似度 Spearman 仅 0.46。作为对比，我们也尝试了 WKV state 的多种聚合方法（Q-Readout、row_sum、diag 等），聚类效果更差（最高 0.11），说明 hidden state 比 WKV state 更适合语义提取。本文提出一个关键洞察：**hidden state 中蕴含语义信息（监督 MLP 分类达 0.94），但无监督方法无法提取，需要用监督数据训练专用投影器（Projection）来释放其语义潜力**。基于此洞察，三任务均取得与监督嵌入模型可比的结果：**(1) 语义相似度**：用 NLI/STS/SICK-R 共 48.1k 标注对训练 STS 专用投影器，Spearman=0.85，与监督训练的专用嵌入模型 bge-large-en-v1.5（STS-B ~0.85）相当；**(2) 主题聚类**：用 20 Newsgroups 38.1k 标注样本训练监督对比投影器，v_measure=0.85，远超无监督 baseline（0.29）及系统对比的 7 类 30+ 种无监督方法（最高 0.33）；**(3) 任务分类**：用 Hidden+MLP 达 val_acc=0.94。需要强调的是，STS 和聚类任务使用了监督投影器，属于监督方法，与无监督 baseline 的对比仅用于验证"hidden state 需要监督投影"这一论点，而非声称超越无监督方法。三任务均基于 albatross 推理引擎（无修改源码）、0.4B RWKV-7 模型、CPU 训练（参数量 ~0.86M），所有代码开源可复现。
 
 **关键词**：RWKV-7, Albatross, 监督投影, 语义嵌入, 各向异性
 
@@ -12,7 +12,12 @@ RWKV-7 作为现代线性 RNN 架构，其内部 WKV state 是一个递归累积
 
 ### 1.1 背景
 
-RWKV-7 [1] 是一种现代线性 RNN，通过 Delta Rule [2] 实现 O(L) 复杂度的序列建模。其核心是 WKV state——一个形状为 `[num_heads, key_dim, value_dim]` 的递归记忆矩阵。Albatross [3] 是 BlinkDL 开发的高效推理引擎，提供 CUDA 加速的 WKV kernel 和批量并发推理能力。
+RWKV-7 [1] 是一种现代线性 RNN，通过 Delta Rule [2] 实现 O(L) 复杂度的序列建模。其内部包含两个层级的状态：
+
+- **WKV state** $S \in \mathbb{R}^{\text{num\_heads} \times \text{key\_dim} \times \text{value\_dim}}$：递归记忆矩阵，是 Delta Rule 的核心，在每个时间步递归更新
+- **Hidden state** $h \in \mathbb{R}^{\text{hidden\_dim}}$：每层 TMix（时间混合）和 CMix（通道混合）的输出向量，是前向传播的中间表示
+
+本文研究的是 **hidden state** 的语义提取能力。WKV state 作为对比基线也进行了实验（§4.3.3），但其聚类效果远低于 hidden state（0.11 vs 0.29）。Albatross [3] 是 BlinkDL 开发的高效推理引擎，提供 CUDA 加速的 WKV kernel 和批量并发推理能力。
 
 ### 1.2 问题
 
@@ -30,7 +35,7 @@ Albatross 提取的 hidden state 虽然蕴含语义信息，但存在严重的�
 
 1. **关键洞察**：albatross hidden state 的各向异性问题可通过监督投影器缓解，无需修改推理引擎
 2. **任务专用投影**：STS 学相似度排序（48.1k pairs），聚类学类间分离（38.1k labeled samples），两者目标不同不可混用
-3. **三任务突破 0.8**：STS Spearman=0.85、聚类 v_measure=0.85、分类 val_acc=0.94
+3. **三任务与监督嵌入模型可比**：STS Spearman=0.85（与 bge-large-en-v1.5 ~0.85 相当）、监督聚类 v_measure=0.85、分类 val_acc=0.94。注意 STS 和聚类使用了监督投影器，属监督方法
 4. **无监督方法系统对比**：7 类 30+ 种无监督方法（KMeans/PCA/UMAP/Whitening/DeepCluster）最高仅 0.33，实证无监督方法的局限，支撑监督投影的必要性
 5. **全 Python 实现**：基于 albatross 推理引擎，按长度分桶并发，250 samples/s
 
@@ -171,7 +176,20 @@ $$\mathcal{L} = -\frac{1}{n} \sum_i \left[ y_i \log \sigma\left(\frac{\cos(\thet
 | 789 | 0.8385 | 0.8177 | 0.8463 |
 | 1024 | 0.8296 | 0.8126 | **0.8504** |
 
-**结论**：训练数据从 5.7k 扩展到 48.1k（8x），Spearman 从 0.58 提升到 0.85（+47%），接近 bge-large-en-v1.5 的 0.83-0.85。
+**结论**：训练数据从 5.7k 扩展到 48.1k（8x），Spearman 从 0.58 提升到 0.85（+47%）。
+
+**与监督嵌入模型的公平对比**：
+
+| 方法 | 类型 | STS-B Spearman | 参数量 |
+|------|------|----------------|--------|
+| **本文 (RWKV-7 0.4B + 监督投影)** | **监督** | **0.8504** | **0.86M (投影器)** |
+| bge-large-en-v1.5 [12] | 监督 | ~0.85 | 335M |
+| all-MiniLM-L6-v2 [13] | 监督 | ~0.86 | 22M |
+| 无监督 Hidden cosine | 无监督 | 0.46 | - |
+
+*监督模型数据来源：MTEB Leaderboard [14]。各模型训练数据和评测 split 可能略有差异，此处为近似对比。*
+
+本文方法在仅 0.86M 投影参数（0.4B 语言模型冻结，仅训练投影器）的条件下，STS-B Spearman 与监督训练的专用嵌入模型 bge-large-en-v1.5（335M 全参数微调）相当。需要强调的是，本方法需要额外的监督训练数据（48.1k pairs），且 0.4B 语言模型本身参数未计入对比。
 
 #### 4.3.2 聚类任务（监督投影 + KMeans）
 
@@ -304,13 +322,13 @@ albatross 路径最优 τ=0.50 远高于 Rust 路径的 0.1，根因是 hidden �
 
 ## 6. 结论
 
-本文提出基于监督投影的 RWKV-7 语义嵌入提取框架，在三个标准任务上突破 0.8：
+本文提出基于监督投影的 RWKV-7 hidden state 语义嵌入提取框架，在三个标准任务上取得与监督嵌入模型可比的结果：
 
-- **语义相似度**：Spearman=0.8504（接近 bge-large-en-v1.5 的 0.83-0.85）
-- **主题聚类（监督）**：v_measure=0.8466（无监督 baseline 0.29，无监督 MTEB SOTA 0.57）
+- **语义相似度（监督）**：Spearman=0.8504，与监督训练的 bge-large-en-v1.5（~0.85, 335M）和 all-MiniLM-L6-v2（~0.86, 22M）相当，投影器仅 0.86M 参数
+- **主题聚类（监督）**：v_measure=0.8466，远超无监督 baseline（0.29）及 30+ 种无监督方法（最高 0.33）
 - **任务分类**：val_acc=0.9392
 
-核心洞察：albatross hidden state 蕴含语义信息但需监督投影释放；任务专用投影器不可混用；数据规模是关键瓶颈。所有方法基于 0.4B 模型，albatross 推理引擎（无修改源码），CPU 可训，参数量 ~0.86M，适合边缘部署。
+核心洞察：albatross hidden state 蕴含语义信息但需监督投影释放；任务专用投影器不可混用；数据规模是关键瓶颈。WKV state 的聚类效果远低于 hidden state（0.11 vs 0.29），说明 hidden state 更适合语义提取。所有方法基于 0.4B 模型，albatross 推理引擎（无修改源码），CPU 可训，参数量 ~0.86M，适合边缘部署。
 
 ---
 
@@ -335,6 +353,14 @@ albatross 路径最优 τ=0.50 远高于 Rust 路径的 0.1，根因是 hidden �
 [9] Gao, T. et al. SimCSE: Simple Contrastive Learning of Sentence Embeddings. EMNLP 2021
 
 [10] Su, J. et al. Whitening Sentence Representations for Better Semantics. arXiv:2103.15316
+
+[11] Reimers, N. and Gurevych, I. Sentence-BERT. EMNLP 2019
+
+[12] Xiao, S. et al. BAAI/bge-large-en-v1.5. https://huggingface.co/BAAI/bge-large-en-v1.5
+
+[13] Wang, W. et al. sentence-transformers/all-MiniLM-L6-v2. https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2
+
+[14] MTEB Leaderboard. https://huggingface.co/spaces/mteb/leaderboard
 
 ---
 
