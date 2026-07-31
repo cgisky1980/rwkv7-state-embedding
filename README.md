@@ -197,15 +197,6 @@ STS scaling from 5.7k to 48.1k (8x) yields +47% improvement, indicating albatros
 | Pure WKV state (albatross, Q-Readout) | 0.11 | State value range small, std=0.13 |
 | WKV state aggregation stats | 0.10 | row_sum/diag/trace have no clustering info |
 
-## RWKV-7 Model Specifications
-
-| Model | hidden_dim | num_heads | head_size | state_dim/layer |
-|-------|-----------|-----------|-----------|-----------------|
-| 0.4B  | 1024      | 16        | 64        | 65536           |
-| 1.5B  | 2048      | 32        | 64        | 131072          |
-| 2.9B  | 2560      | 40        | 64        | 163840          |
-| 7B    | 4096      | 64        | 64        | 262144          |
-
 ## Citation
 
 ```bibtex
