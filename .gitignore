@@ -1,0 +1,34 @@
+# 大文件 - 由脚本自动生成/下载
+cache_python/
+models/
+*.pth
+*.npz
+*.pt
+
+# albatross 源码 (嵌套 git 仓库, 由 00_setup.py 复制)
+albatross_src/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+.venv/
+venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# 日志
+*.log
