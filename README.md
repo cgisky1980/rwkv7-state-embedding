@@ -1,6 +1,6 @@
-# RWKV-7 Hidden State Semantic Embedding: A Unified Supervised Projection Framework
+# RWKV-7 State Semantic Embedding: A Unified Supervised Projection Framework
 
-This repository systematically explores how to extract semantic embeddings from RWKV-7 hidden state, based on the **albatross official inference engine** (unmodified), covering three standard evaluation tasks.
+This repository systematically explores how to extract semantic embeddings from RWKV-7 internal states (hidden state and WKV state), based on the **albatross official inference engine** (unmodified), covering three standard evaluation tasks.
 
 **Paper**: [paper_en.md](paper_en.md) (English) | [paper.md](paper.md) (Chinese)
 
@@ -201,7 +201,7 @@ STS scaling from 5.7k to 48.1k (8x) yields +47% improvement, indicating albatros
 
 ```bibtex
 @misc{rwkv-state-embedding-2026,
-  title={RWKV-7 Hidden State Semantic Embedding: A Unified Supervised Projection Framework},
+  title={RWKV-7 State Semantic Embedding: A Unified Supervised Projection Framework},
   author={RWKV Community},
   year={2026},
   url={https://github.com/cgisky1980/rwkv7-state-embedding}

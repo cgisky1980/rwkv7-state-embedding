@@ -1,4 +1,4 @@
-# RWKV-7 Hidden State Semantic Embedding: A Unified Supervised Projection Framework for Three Tasks
+# RWKV-7 State Semantic Embedding: A Unified Supervised Projection Framework for Three Tasks
 
 ## Abstract
 
