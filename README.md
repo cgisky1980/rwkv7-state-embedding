@@ -1,220 +1,222 @@
-# RWKV-7 State 语义嵌入：基于监督投影的三任务统一框架
+# RWKV-7 State Semantic Embedding: A Unified Supervised Projection Framework
 
-本仓库系统性探索如何从 RWKV-7 的 hidden state 提取语义嵌入，基于 **albatross 官方推理引擎**（无修改），覆盖三个标准评估任务。
+This repository systematically explores how to extract semantic embeddings from RWKV-7 hidden state, based on the **albatross official inference engine** (unmodified), covering three standard evaluation tasks.
 
-**论文**：[paper.md](paper.md)（中文）| [paper_en.md](paper_en.md)（English）
+**Paper**: [paper_en.md](paper_en.md) (English) | [paper.md](paper.md) (Chinese)
 
-## 核心结果
+## Key Results
 
-| 任务 | 方法 | 指标 | 对比 |
-|------|------|------|------|
-| **语义相似度** | 监督投影 (48.1k pairs) + AnglE + 5seed | Spearman=**0.8504** | 接近 bge-large 0.83-0.85 |
-| **主题聚类（监督）** | 监督对比学习投影 + KMeans | v_measure=**0.8466** | 无监督 baseline 0.29，无监督 SOTA 0.57 |
-| **任务分类** | Hidden + MLP | val_acc=**0.9392** | - |
+| Task | Method | Metric | Comparison |
+|------|--------|--------|------------|
+| **Semantic Similarity** | Supervised Projection (48.1k pairs) + AnglE + 5-seed | Spearman=**0.8504** | Approaching bge-large 0.83-0.85 |
+| **Topic Clustering (supervised)** | Supervised Contrastive Projection + KMeans | v_measure=**0.8466** | Unsupervised baseline 0.29, unsupervised SOTA 0.57 |
+| **Task Classification** | Hidden + MLP | val_acc=**0.9392** | - |
 
-## 核心洞察
+## Key Insight
 
-**albatross hidden state 蕴含语义信息（监督分类达 0.94），但无监督方法无法提取（STS 0.46、聚类 0.29），需要监督投影器释放其潜力。**
+**Albatross hidden state contains semantic information (supervised classification reaches 0.94), but unsupervised methods cannot extract it (STS 0.46, clustering 0.29); supervised projectors are needed to unlock its potential.**
 
-| 任务 | 无监督 | 监督投影 | 提升 |
-|------|--------|---------|------|
+| Task | Unsupervised | Supervised Projection | Improvement |
+|------|--------------|----------------------|-------------|
 | STS | 0.46 | 0.85 | +85% |
-| 聚类 | 0.29 | 0.85 | +193% |
+| Clustering | 0.29 | 0.85 | +193% |
 
-**任务专用投影器不可混用**：STS 学相似度排序，聚类学类间分离，两者目标不同（STS 投影迁移到聚类失败：0.14 < 0.34 baseline）。
+**Task-specific projectors cannot be mixed**: STS learns similarity ranking, clustering learns class separation—objectives differ (STS projection transfer to clustering fails: 0.14 < 0.34 baseline).
 
-## 目录结构
+## Directory Structure
 
 ```
 paper/
-├── paper.md                          # 论文（中文）
 ├── paper_en.md                       # Paper (English)
-├── README.md                         # 本文件
-├── albatross_src/                    # albatross 官方源码（多个版本）
-│   └── faster_251101/reference/      # 参考实现（rwkv7.py + cuda/）
-├── models/                           # RWKV-7 0.4B 模型
+├── paper.md                          # Paper (Chinese)
+├── README.md                         # This file
+├── albatross_src/                    # albatross official source (multiple versions)
+│   └── faster_251101/reference/      # reference implementation (rwkv7.py + cuda/)
+├── models/                           # RWKV-7 0.4B model
 │   └── rwkv7-g1d-0.4b-20260210-ctx8192.pth
-├── cache_python/                     # 特征缓存（.npz）
+├── cache_python/                     # feature cache (.npz)
 └── scripts/
-    ├── 00_setup.py                   # 环境配置（下载模型+复制源码）
-    ├── extract_features.py           # 批量并发特征提取（albatross）
-    ├── 01_clustering.py              # 任务一：聚类（无监督 baseline）
-    ├── 02_sts_similarity.py          # 任务二：STS（48.1k 训练，监督投影）
-    ├── 03_classification.py          # 任务三：分类（Hidden+MLP）
-    ├── 04_cluster_with_projection.py # STS 投影迁移聚类（失败实验）
-    ├── 05_cluster_supervised_projection.py  # 聚类（监督对比学习投影）
-    ├── run_with_msvc.bat             # Windows MSVC 环境激活
+    ├── 00_setup.py                   # environment setup (download model + copy source)
+    ├── extract_features.py           # batched concurrent feature extraction (albatross)
+    ├── 01_clustering.py              # Task 1: clustering (unsupervised baseline)
+    ├── 02_sts_similarity.py          # Task 2: STS (48.1k training, supervised projection)
+    ├── 03_classification.py          # Task 3: classification (Hidden+MLP)
+    ├── 04_cluster_with_projection.py # STS projection transfer to clustering (failed experiment)
+    ├── 05_cluster_supervised_projection.py  # Clustering (supervised contrastive projection)
+    ├── run_with_msvc.bat             # Windows MSVC environment activation
     └── lib/
-        ├── albatross_wrapper.py      # albatross 封装（含 batch 并发提取）
-        ├── cache.py                   # .npz 缓存读写
-        ├── rwkv7.py                   # albatross 官方代码
+        ├── albatross_wrapper.py      # albatross wrapper (with batch concurrent extraction)
+        ├── cache.py                  # .npz cache I/O
+        ├── rwkv7.py                   # albatross official code
         └── cuda/                      # WKV CUDA kernel
 ```
 
-## 环境要求
+## Requirements
 
-### 软件
+### Software
 - Python 3.10+
-- [uv](https://github.com/astral-sh/uv)（包管理）
-- CUDA GPU（albatross 推理用）
-- Windows 需 MSVC（编译 CUDA 扩展）
+- [uv](https://github.com/astral-sh/uv) (package manager)
+- CUDA GPU (for albatross inference)
+- MSVC on Windows (to compile CUDA extensions)
 
-### Python 依赖
+### Python Dependencies
 
 ```bash
-# 用 uv 安装（推荐）
+# Install with uv (recommended)
 uv pip install numpy torch scikit-learn scipy huggingface_hub flag_gems
 
-# 或用 pip
+# Or with pip
 pip install numpy torch scikit-learn scipy huggingface_hub flag_gems
 ```
 
-## 运行步骤
+## Reproduction Steps
 
-### 步骤 0：环境配置
+### Step 0: Environment Setup
 
 ```powershell
 cd c:\work\niceui\rwkv-router\paper\scripts
 
-# 下载 RWKV-7 0.4B 模型（BlinkDL/rwkv7-g1）+ 复制 albatross 源码
+# Download RWKV-7 0.4B model (BlinkDL/rwkv7-g1) + copy albatross source
 uv run --project ../../scripts python 00_setup.py
 ```
 
-### 步骤 1：下载数据集
+### Step 1: Download Datasets
 
 ```powershell
 cd c:\work\niceui\rwkv-router
 
-# 下载 STS + 聚类 + 分类数据集
+# Download STS + clustering + classification datasets
 uv run --project scripts python scripts/download_embedding_eval_data.py
 ```
 
-数据集将下载到：
-- `data/clustering/twentynewsgroups.jsonl`（聚类，59545 样本）
-- `data/sts/sts_train.jsonl` 等（STS-B）
-- `data/sts/nli_train.jsonl`, `extra_train.jsonl`, `sickr.jsonl`（额外训练数据）
-- `data/golden_balanced.jsonl`（分类）
+Datasets will be downloaded to:
+- `data/clustering/twentynewsgroups.jsonl` (clustering, 59545 samples)
+- `data/sts/sts_train.jsonl` etc. (STS-B)
+- `data/sts/nli_train.jsonl`, `extra_train.jsonl`, `sickr.jsonl` (extra training data)
+- `data/golden_balanced.jsonl` (classification)
 
-### 步骤 2：提取特征（albatross 并发推理）
+### Step 2: Extract Features (albatross concurrent inference)
 
 ```powershell
 cd c:\work\niceui\rwkv-router\paper\scripts
 
-# STS 特征（STS-B train/dev/test）
+# STS features (STS-B train/dev/test)
 .\run_with_msvc.bat extract_features.py --task sts --batch-size 16 --max-length 128
 
-# STS 额外训练数据（NLI + extra_train + SICK-R，共 42k pairs）
+# STS extra training data (NLI + extra_train + SICK-R, 42k pairs total)
 .\run_with_msvc.bat extract_features.py --task sts_extra --batch-size 16 --max-length 128
 
-# 聚类全量特征（59545 样本）
+# Clustering full features (59545 samples)
 .\run_with_msvc.bat extract_features.py --task cluster_full --batch-size 16 --max-length 128
 
-# 分类特征（限制 8000 样本以加速）
+# Classification features (limit to 8000 samples for speed)
 .\run_with_msvc.bat extract_features.py --task classification --batch-size 16 --max-length 128 --limit 8000
 ```
 
-**特征提取速度**：250 samples/s（按长度分桶并发，3.6x 加速）
+**Feature extraction speed**: 250 samples/s (bucketed by length for concurrency, 3.6x speedup)
 
-### 步骤 3：运行三任务
+### Step 3: Run Three Tasks
 
 ```powershell
 cd c:\work\niceui\rwkv-router\paper\scripts
 
-# 任务二：语义相似度（48.1k 训练 + 5seed 集成）→ Spearman 0.8504
+# Task 2: Semantic Similarity (48.1k training + 5-seed ensemble) → Spearman 0.8504
 uv run --project ../../scripts python 02_sts_similarity.py
 
-# 任务五：主题聚类（监督对比学习 + 5seed 集成）→ v_measure 0.8466
+# Task 5: Topic Clustering (supervised contrastive learning + 5-seed ensemble) → v_measure 0.8466
 uv run --project ../../scripts python 05_cluster_supervised_projection.py
 
-# 任务三：任务分类（Hidden + MLP）→ val_acc 0.9392
+# Task 3: Task Classification (Hidden + MLP) → val_acc 0.9392
 uv run --project ../../scripts python 03_classification.py
 ```
 
-### 步骤 4（可选）：消融实验
+### Step 4 (Optional): Ablation Experiments
 
 ```powershell
-# 无监督聚类 baseline（Hidden + standardize + KMeans）→ v_measure 0.34
+# Unsupervised clustering baseline (Hidden + standardize + KMeans) → v_measure 0.34
 uv run --project ../../scripts python 01_clustering.py
 
-# STS 投影迁移聚类（失败实验）→ v_measure 0.14
+# STS projection transfer to clustering (failed experiment) → v_measure 0.14
 uv run --project ../../scripts python 04_cluster_with_projection.py
 ```
 
-## 预期输出
+## Expected Output
 
-### 任务二：语义相似度
+### Task 2: Semantic Similarity
 ```
-结论:
-  无监督 Hidden cosine:  Spearman = 0.4600
-  单模型均值:            Spearman = 0.8166
-  5seed 集成:             Spearman = 0.8504
+Conclusion:
+  Unsupervised Hidden cosine:  Spearman = 0.4600
+  Single model mean:           Spearman = 0.8166
+  5-seed ensemble:             Spearman = 0.8504
 ```
 
-### 任务五：主题聚类
+### Task 5: Topic Clustering
 ```
-结论:
+Conclusion:
   Baseline (Hidden + standardize):    v_measure = 0.2912
-  Projection + KMeans (直接):         v_measure = 0.8388
+  Projection + KMeans (direct):       v_measure = 0.8388
   Projection + standardize + KMeans:  v_measure = 0.8466
   Projection + PCA(64) + KMeans:      v_measure = 0.8450
 ```
 
-### 任务三：任务分类
+### Task 3: Task Classification
 ```
-结果:
+Result:
   val_acc = 0.9392
 ```
 
-## 关键设计决策
+## Key Design Decisions
 
-### 1. 为什么用监督投影（而非无监督）
-albatross hidden state 存在严重各向异性（无监督 STS 仅 0.46），但监督 MLP 分类达 0.94，证明特征中有信息。监督投影器（MLP + AnglE Loss）能将 hidden 映射到线性可分的语义空间。
+### 1. Why Supervised Projection (not Unsupervised)
+Albatross hidden state exhibits severe anisotropy (unsupervised STS only 0.46), but supervised MLP classification reaches 0.94, proving the features contain information. Supervised projectors (MLP + AnglE Loss) map hidden to a linearly separable semantic space.
 
-### 2. 为什么 STS 和聚类需要不同的投影器
-- **STS**：学相似度排序（相对距离），L2 normalize 压缩类间距离
-- **聚类**：学类间分离（绝对距离），保留绝对位置
+### 2. Why STS and Clustering Need Different Projectors
+- **STS**: learns similarity ranking (relative distance), L2 normalize compresses inter-class distance
+- **Clustering**: learns class separation (absolute distance), preserves absolute position
 
-STS 投影迁移到聚类失败（0.14 < 0.34 baseline），证明投影器必须与任务目标对齐。
+STS projection transfer to clustering fails (0.14 < 0.34 baseline), proving projectors must align with task objectives.
 
-### 3. 为什么数据规模是关键
-STS 从 5.7k 扩展到 48.1k（8x）带来 +47% 提升，说明 albatross hidden 的语义信息需要足够数据才能通过监督学习提取。
+### 3. Why Data Scale is Key
+STS scaling from 5.7k to 48.1k (8x) yields +47% improvement, indicating albatross hidden's semantic information requires sufficient data to extract via supervised learning.
 
-### 4. 为什么用 albatross（而非 Rust web-rwkv）
-- albatross 是官方 PyTorch 实现，支持批量并发推理
-- 本工作完全使用官方推理引擎，未修改任何源码
-- albatross 路径最优 τ=0.50（Rust 路径为 0.1），根因是 hidden 数值范围差异
+### 4. Why albatross (not Rust web-rwkv)
+- albatross is the official PyTorch implementation, supporting batched concurrent inference
+- This work uses the official inference engine entirely, without modifying any source code
+- albatross path optimal τ=0.50 (Rust path is 0.1), root cause is hidden value range difference
 
-## 失败方向总结
+## Summary of Failed Directions
 
-| 方法 | 失败原因 |
-|------|---------|
-| STS projection 迁移聚类 | STS 学相似度排序，聚类需类间分离 |
-| 无监督 KMeans | hidden 各向异性严重，无监督无法提取 |
-| 无监督 Hidden cosine (STS) | 各向异性导致 0.46 << 0.85 |
-| 纯 WKV state (albatross, Q-Readout) | state 数值范围小，std=0.13，Q-Readout 聚类 v_measure=0.11 |
-| 禁用 v_first 机制 | state std 仅 0.16，未达 Rust 水平 |
-| fp32 state (vs fp16) | std 0.13≈0.13，精度非根因 |
+| Method | Result | Failure Reason |
+|--------|--------|----------------|
+| STS projection transfer to clustering | 0.14 | STS learns ranking, clustering needs separation |
+| Unsupervised KMeans | 0.29 | Hidden anisotropy severe, unsupervised cannot extract |
+| Unsupervised Hidden cosine (STS) | 0.46 | Anisotropy causes 0.46 << 0.85 |
+| UMAP nonlinear dim. reduction | 0.33 | Nonlinear reduction also ineffective |
+| DeepCluster self-supervised iter. | 0.30 | Pseudo-label quality too low |
+| Multi-layer hidden concatenation | 0.26 | Shallow-layer noise dilutes deep semantics |
+| Pure WKV state (albatross, Q-Readout) | 0.11 | State value range small, std=0.13 |
+| WKV state aggregation stats | 0.10 | row_sum/diag/trace have no clustering info |
 
-## RWKV-7 模型规格
+## RWKV-7 Model Specifications
 
-| 模型 | hidden_dim | num_heads | head_size | state_dim/层 |
-|------|-----------|-----------|-----------|--------------|
-| 0.4B | 1024 | 16 | 64 | 65536 |
-| 1.5B | 2048 | 32 | 64 | 131072 |
-| 2.9B | 2560 | 40 | 64 | 163840 |
-| 7B   | 4096 | 64 | 64 | 262144 |
+| Model | hidden_dim | num_heads | head_size | state_dim/layer |
+|-------|-----------|-----------|-----------|-----------------|
+| 0.4B  | 1024      | 16        | 64        | 65536           |
+| 1.5B  | 2048      | 32        | 64        | 131072          |
+| 2.9B  | 2560      | 40        | 64        | 163840          |
+| 7B    | 4096      | 64        | 64        | 262144          |
 
-## 引用
+## Citation
 
 ```bibtex
 @misc{rwkv-state-embedding-2026,
   title={RWKV-7 State Semantic Embedding: A Unified Supervised Projection Framework},
   author={RWKV Community},
   year={2026},
-  url={https://github.com/opensquilla/rwkv-router}
+  url={https://github.com/cgisky1980/rwkv7-state-embedding}
 }
 ```
 
-## 许可证
+## License
 
 MIT
