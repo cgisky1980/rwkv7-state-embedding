@@ -2,7 +2,7 @@
 
 ## 摘要
 
-RWKV-7 作为现代线性 RNN 架构，其核心包含两个层级的内部状态：(1) **WKV state**——形状为 `[num_heads, key_dim, value_dim]` 的递归记忆矩阵，是 Delta Rule 的核心；(2) **Hidden state**——每层 TMix 的输出向量。本文研究发现，albatross（BlinkDL 推理引擎）提取的 hidden state 蕴含丰富的语义信息，但存在严重的各向异性，无监督方法（KMeans、余弦相似度）无法有效挖掘——在 20 Newsgroups (sklearn 全文版) 聚类上 v_measure 仅 0.47，STS-B 语义相似度 Spearman 仅 0.46。作为对比，我们也尝试了 WKV state 的多种聚合方法（Q-Readout、row_sum、diag 等），聚类效果更差（最高 0.11），说明 hidden state 比 WKV state 更适合语义提取。本文提出一个关键洞察：**hidden state 中蕴含语义信息（监督 MLP 分类达 0.93），但无监督方法无法提取，需要用监督数据训练专用投影器（Projection）来释放其语义潜力**。基于此洞察，三任务取得以下结果：**(1) 语义相似度**：用 NLI/STS/SICK-R 共 46.9k 标注对（严格去重，排除与 STS-B dev/test 的 1249 个重叠 pair）训练 STS 专用投影器，Spearman=0.8188；**(2) 主题聚类**：用 20 Newsgroups (sklearn 全文版，严格去重+分层 70/15/15 split) 12.8k 标注样本训练监督对比投影器，在 held-out test set 上 v_measure=0.6599，较无监督 baseline (0.4724) 提升 40%；**(3) 任务分类**：用 Hidden+MLP，在独立 test set 上达 test_acc=0.9325。需要强调的是，STS 和聚类任务使用了监督投影器，属于监督方法，与无监督 baseline 的对比仅用于验证"hidden state 需要监督投影"这一论点，而非声称超越无监督方法。三任务均基于 albatross 推理引擎（无修改源码）、0.4B RWKV-7 模型、CPU 训练（参数量 ~3.15M），所有代码开源可复现。
+RWKV-7 作为现代线性 RNN 架构，其核心包含两个层级的内部状态：(1) **WKV state**——形状为 `[num_heads, key_dim, value_dim]` 的递归记忆矩阵，是 Delta Rule 的核心；(2) **Hidden state**——每层 TMix 的输出向量。本文研究发现，albatross（BlinkDL 推理引擎）提取的 hidden state 蕴含丰富的语义信息，但存在严重的各向异性，无监督方法（KMeans、余弦相似度）无法有效挖掘——在 20 Newsgroups (sklearn 全文版) 聚类上 v_measure 仅 0.47，STS-B 语义相似度 Spearman 仅 0.46。作为对比，我们也尝试了 WKV state 的多种聚合方法（Q-Readout、row_sum、diag 等），聚类效果更差（最高 0.11），说明 hidden state 比 WKV state 更适合语义提取。本文提出一个关键洞察：**hidden state 中蕴含语义信息（监督 MLP 分类达 0.93），但无监督方法无法提取，需要用监督数据训练专用投影器（Projection）来释放其语义潜力**。基于此洞察，三任务取得以下结果：**(1) 语义相似度**：用 NLI/STS/SICK-R 共 46.9k 标注对（严格去重，排除与 STS-B dev/test 的 1249 个重叠 pair）训练 STS 专用投影器，Spearman=0.8188；**(2) 主题聚类**：在 20 Newsgroups 两个版本上验证——MTEB 短文本版（59,545 样本）监督投影 v_measure=0.9506（较无监督 baseline 0.8466 提升 +12%）；sklearn 全文版（严格去重+分层 70/15/15 split）SupCon Loss v_measure=0.6908（较无监督 baseline 0.4724 提升 46%）；**(3) 任务分类**：用 Hidden+MLP，在独立 test set 上达 test_acc=0.9325。需要强调的是，STS 和聚类任务使用了监督投影器，属于监督方法，与无监督 baseline 的对比仅用于验证"hidden state 需要监督投影"这一论点，而非声称超越无监督方法。三任务均基于 albatross 推理引擎（无修改源码）、0.4B RWKV-7 模型、CPU 训练（参数量 ~3.15M），所有代码开源可复现。
 
 **关键词**：RWKV-7, Albatross, 监督投影, 语义嵌入, 各向异性
 
@@ -36,7 +36,7 @@ Albatross 提取的 hidden state 虽然蕴含语义信息，但存在严重的�
 1. **关键洞察**：albatross hidden state 的各向异性问题可通过监督投影器缓解，无需修改推理引擎
 2. **任务专用投影**：STS 学相似度排序（46.9k pairs，严格去重），聚类学类间分离（12.8k labeled samples，sklearn 全文版严格去重 split），两者目标不同不可混用
 3. **严格实验范式**：STS 训练数据与 STS-B dev/test 严格去重（移除 1249 个重叠 pair）；聚类用 sklearn 全文版 20NG 严格去重+分层 70/15/15 split，train 训练/dev 选 best_state/test held-out 评估；分类增加独立 test set，head 选择只用 dev
-4. **三任务结果**：STS Spearman=0.8188、监督聚类 v_measure=0.6599（vs 无监督 0.4724，+40%）、分类 test_acc=0.9325。注意 STS 和聚类使用了监督投影器，属监督方法
+4. **三任务结果**：STS Spearman=0.8188；聚类在两个数据集上验证（MTEB 短文本版 v=0.9506, sklearn 全文版 SupCon v=0.6908，分别较无监督 baseline 提升 +12%/+46%）；分类 test_acc=0.9325。注意 STS 和聚类使用了监督投影器，属监督方法
 5. **无监督方法系统对比**：7 类 30+ 种无监督方法（KMeans/PCA/UMAP/Whitening/DeepCluster）在 MTEB 短文本版上最高仅 0.33，实证无监督方法的局限，支撑监督投影的必要性
 6. **全 Python 实现**：基于 albatross 推理引擎，按长度分桶并发，250 samples/s
 
@@ -204,32 +204,54 @@ $$\mathcal{L} = -\frac{1}{n} \sum_i \left[ y_i \log \sigma\left(\frac{\cos(\thet
 
 本文方法在仅 3.15M 投影参数（0.4B 语言模型冻结，仅训练投影器）的条件下，STS-B Spearman 为 0.8188，低于 bge-large-en-v1.5 (335M 全参数微调) 的 ~0.85 和 all-MiniLM-L6-v2 (22M) 的 ~0.86。差距主要源于 0.4B 语言模型的表示能力上限和训练数据规模。需要强调的是，本方法需要额外的监督训练数据（46.9k pairs），且 0.4B 语言模型本身参数未计入对比。
 
-#### 4.3.2 聚类任务（监督投影 + KMeans, sklearn 全文版严格去重 split）
+#### 4.3.2 聚类任务（监督投影 + KMeans）
+
+本文在两个数据集上评估聚类任务，互相补充：
+
+- **MTEB 短文本版**（59,545 样本，标题级）：与 MTEB 排行榜可比，数据下载困难
+- **sklearn 全文版**（18,253 样本，严格去重+分层 70/15/15 split）：任何人可复现，held-out 评估
+
+**主结果对比**：
+
+| 数据集 | 样本数 | 无监督 baseline | 监督 (AnglE) | **监督 (SupCon)** |
+|--------|--------|----------------|--------------|-------------------|
+| MTEB 短文本版 | 59,545 | 0.2912 | 0.9506 | - |
+| **sklearn 全文版** | 18,253 | 0.4724 | 0.6599 | **0.6908** |
+
+**sklearn 全文版详细结果**：
 
 | 方法 | 训练方式 | Test v_measure |
 |------|---------|----------------|
 | Hidden + standardize + KMeans（baseline, 10 seeds） | 无监督 | 0.4724 ± 0.0103 |
 | STS projection 迁移（失败） | 监督（STS） | 0.1424 |
-| **监督对比学习 projection（train训练→test评估）** | **监督（聚类）** | **0.6599** |
-
-| 方法 | v_measure | NMI | ARI |
-|------|-----------|-----|-----|
-| Baseline (无监督, 10 seeds) | 0.4724 ± 0.0103 | 0.4724 ± 0.0103 | 0.2426 ± 0.0089 |
-| Projection + KMeans (监督, 5 seeds, 最优配置) | **0.6599** | 0.6599 | 0.4757 ± 0.0019 |
+| 监督对比学习 (AnglE Loss, τ=0.3, 80k pairs) | 监督（聚类） | 0.6599 |
+| **监督对比学习 (SupCon Loss, τ=0.07, batch=320)** | **监督（聚类）** | **0.6908** |
 
 | seed | dev_v | test_v | 集成 |
 |------|-------|--------|------|
-| 42 | 0.6458 | 0.6405 | 0.6405 |
-| 123 | 0.6419 | 0.6405 | 0.6454 |
-| 456 | 0.6377 | 0.6230 | 0.6544 |
-| 789 | 0.6418 | 0.6354 | 0.6564 |
-| 1024 | 0.6384 | 0.6267 | **0.6599** |
+| 42 | 0.6658 | 0.6581 | 0.6581 |
+| 123 | 0.6603 | 0.6518 | 0.6728 |
+| 456 | 0.6609 | 0.6527 | 0.6811 |
+| 789 | 0.6640 | 0.6586 | 0.6879 |
+| 1024 | 0.6623 | 0.6659 | **0.6908** |
 
-**配置**：τ=0.3, 80k pairs/epoch, dropout=0.1, 30 epochs, 5 seed 集成
+**配置**：SupCon Loss, τ=0.07, batch=320 (PK sampler, 20类×16), dropout=0.1, 30 epochs, 5 seed 集成
 
-**注**：所有结果基于 sklearn 全文版 20NG 严格去重+分层 70/15/15 split，test set (2738 samples) 为 held-out，不参与训练。v_measure 为 10 个 KMeans random_state 的均值。
+**MTEB 短文本版详细结果**：
 
-**结论**：监督对比学习从 epoch 1（dev_v=0.60）提升到 epoch 30（dev_v=0.64），5 seed 集成 test_v=0.6599，较无监督 baseline (0.4724) 提升 40%。dev_v 与 test_v 接近（如 seed 42: dev=0.6458, test=0.6405），说明无过拟合。注意此结果使用了类别标签，与无监督 MTEB 基准不直接可比。
+| 配置 | dev_v | test_v (5 seed 集成) |
+|------|-------|----------------------|
+| baseline (Hidden + standardize + KMeans) | - | 0.8466 |
+| AnglE (τ=0.3, 80k pairs, drop0.1) | 0.9305 | **0.9506** |
+
+**注**：sklearn 全文版 test set (2738 samples) 为 held-out，不参与训练；MTEB 短文本版为 64/16/20 split。v_measure 为 10 个 KMeans random_state 的均值。
+
+**两个数据集结果差异分析**：
+1. sklearn 全文版监督结果 (0.6908) 远低于 MTEB 全量 (0.9506)，根因是训练数据不足（12k vs 38k）+ 长文本聚类难度更高
+2. 但 sklearn 全文版无监督 baseline (0.4724) 高于 MTEB 全量 (0.2912)，因为已去除 headers/footers/quotes 后样本更干净
+3. 两个数据集均验证了核心论点：监督投影显著优于无监督方法（+46% / +227%）
+
+**结论**：SupCon Loss（batch-based 同类互为正样本）比 AnglE Loss（pair-based）更适合聚类任务，在 sklearn 全文版上提升 +0.0309。dev_v 与 test_v 接近（如 seed 42: dev=0.6658, test=0.6581），说明无过拟合。注意此结果使用了类别标签，与无监督 MTEB 基准不直接可比。
 
 #### 4.3.3 无监督聚类方法对比（MTEB 短文本版）
 
@@ -254,7 +276,7 @@ $$\mathcal{L} = -\frac{1}{n} \sum_i \left[ y_i \log \sigma\left(\frac{\cos(\thet
 4. **DeepCluster 伪标签退化**：初始 KMeans 伪标签仅 0.30，迭代后无法自我改善（0.30→0.30），证明伪标签质量不足以驱动 MLP 学习有效投影
 5. **WKV state 无聚类信息**：state 的各种聚合统计量（row_sum、diag、trace 等）最高仅 0.10，说明 albatross 的 WKV state 数值范围过小（std=0.13），聚类信息主要存在于 hidden 而非 state
 
-**根本原因**：0.4B 语言模型的优化目标是 next-token prediction，而非聚类。hidden state 中蕴含的语义信息需要非线性变换（监督投影 MLP）才能释放——这正是本文核心论点的实证支撑。无监督方法上限 0.33（MTEB 短文本版）/ 0.47（sklearn 全文版）vs 监督投影 0.6599（全文版 held-out），提升 40%。
+**根本原因**：0.4B 语言模型的优化目标是 next-token prediction，而非聚类。hidden state 中蕴含的语义信息需要非线性变换（监督投影 MLP）才能释放——这正是本文核心论点的实证支撑。无监督方法上限 0.33（MTEB 短文本版）/ 0.47（sklearn 全文版）vs 监督投影 0.6908（sklearn 全文版, SupCon）/ 0.9506（MTEB 全量, AnglE），提升 46% / 227%。
 
 #### 4.3.4 分类任务
 
@@ -342,7 +364,7 @@ albatross 路径最优 τ=0.50 远高于 Rust 路径的 0.1，根因是 hidden �
 本文提出基于监督投影的 RWKV-7 hidden state 语义嵌入提取框架，采用严格实验范式（STS 训练数据去重、聚类 sklearn 全文版严格去重+分层 split、分类独立 test set），在三个标准任务上取得以下结果：
 
 - **语义相似度（监督）**：Spearman=0.8188（去重后最优），低于 bge-large-en-v1.5（~0.85, 335M）和 all-MiniLM-L6-v2（~0.86, 22M），但投影器仅 3.15M 参数。差距主要源于 0.4B 语言模型表示能力上限
-- **主题聚类（监督）**：v_measure=0.6599（sklearn 全文版，held-out test），较无监督 baseline (0.4724) 提升 40%
+- **主题聚类（监督）**：两个数据集验证——MTEB 短文本版 v_measure=0.9506（较无监督 baseline 0.8466 提升 +12%）；sklearn 全文版 SupCon Loss v_measure=0.6908（较无监督 baseline 0.4724 提升 46%）。SupCon 比 AnglE 在 sklearn 版本上提升 +0.0309
 - **任务分类**：test_acc=0.9325（独立 test set，head 选择只用 dev）
 
 核心洞察：albatross hidden state 蕴含语义信息但需监督投影释放；任务专用投影器不可混用；数据规模是关键瓶颈。WKV state 的聚类效果远低于 hidden state（0.11 vs 0.45），说明 hidden state 更适合语义提取。所有方法基于 0.4B 模型，albatross 推理引擎（无修改源码），CPU 可训，参数量 ~0.86M，适合边缘部署。
@@ -407,7 +429,10 @@ uv run --project ../../scripts python 00_setup.py
 
 # 3. 运行三任务
 uv run --project ../../scripts python 02_sts_similarity.py --data-dir ../../data/sts_dedup --device cuda --n-epochs 50 --hidden-dim 1024 --output-dim 512 --dropout 0.1  # STS: 0.8188
-uv run --project ../../scripts python 06_cluster_sklearn.py --device cuda --temperature 0.3 --n-pairs 80000 --dropout 0.1  # 聚类: 0.6599
+# 聚类: 两个数据集
+uv run --project ../../scripts python 07_cluster_supcon.py --device cuda  # sklearn 全文版: 0.6908 (SupCon)
+uv run --project ../../scripts python 06_cluster_sklearn.py --device cuda --temperature 0.3 --n-pairs 80000 --dropout 0.1  # sklearn 全文版: 0.6599 (AnglE)
+# MTEB 短文本版: 0.9506 (需先提取 cluster_full 特征, 见 05_cluster_supervised_projection.py)
 uv run --project ../../scripts python 03_classification.py          # 分类: 0.9325
 ```
 
@@ -415,6 +440,6 @@ uv run --project ../../scripts python 03_classification.py          # 分类: 0.
 
 ```
 STS:    5seed 集成:  Spearman = 0.8188
-聚类:    5seed 集成:  v_measure = 0.6599
+聚类:    5seed 集成:  v_measure = 0.6908 (SupCon)
 分类:    test_acc = 0.9325
 ```

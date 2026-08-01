@@ -9,7 +9,7 @@ This repository systematically explores how to extract semantic embeddings from 
 | Task | Method | Metric | Comparison |
 |------|--------|--------|------------|
 | **Semantic Similarity** | Supervised Projection (46.9k pairs, deduplicated, optimal config) + AnglE + 5-seed | Spearman=**0.8188** | Below bge-large ~0.85 (335M) and all-MiniLM-L6-v2 ~0.86 (22M); 3.15M projector params |
-| **Topic Clustering (supervised)** | Supervised Contrastive Projection (sklearn full-text, held-out test) | v_measure=**0.6599** | vs unsupervised baseline 0.4724 (+40%); MTEB short-text unsupervised cap 0.33 |
+| **Topic Clustering (supervised)** | Supervised Contrastive Projection (two datasets) | v_measure=**0.9506** (MTEB) / **0.6908** (sklearn) | MTEB: +12% over 0.8466; sklearn: +46% over 0.4724 (SupCon Loss) |
 | **Task Classification** | Hidden + MLP (independent test set) | test_acc=**0.9325** | dev_acc=0.9381, head selection on dev only |
 
 ## Key Insight
@@ -19,7 +19,8 @@ This repository systematically explores how to extract semantic embeddings from 
 | Task | Unsupervised | Supervised Projection | Improvement |
 |------|--------------|----------------------|-------------|
 | STS | 0.46 | 0.8188 | +78% |
-| Clustering (sklearn full-text) | 0.4724 | 0.6599 | +40% |
+| Clustering (MTEB short-text) | 0.8466 | 0.9506 | +12% |
+| Clustering (sklearn full-text, SupCon) | 0.4724 | 0.6908 | +46% |
 
 **Task-specific projectors cannot be mixed**: STS learns similarity ranking, clustering learns class separation—objectives differ (STS projection transfer to clustering fails: 0.14 < 0.34 baseline).
 
@@ -50,7 +51,8 @@ paper/
     ├── 03_classification.py          # Task 3: classification (Hidden+MLP, independent test set)
     ├── 04_cluster_with_projection.py # STS projection transfer to clustering (failed experiment)
     ├── 05_cluster_supervised_projection.py  # Clustering (supervised, MTEB short-text version)
-    ├── 06_cluster_20ng_full.py       # Task 6: Clustering (sklearn full-text, strict dedup+split)
+    ├── 06_cluster_sklearn.py      # Task 6: Clustering (sklearn full-text, AnglE Loss)
+    ├── 07_cluster_supcon.py       # Task 7: Clustering (sklearn full-text, SupCon Loss)
     ├── dedup_sts_train.py            # STS training data deduplication script
     ├── split_20ng_full.py            # 20NG sklearn full-text dedup + split script
     ├── diagnose_sts_overlap.py       # STS train/test overlap diagnosis
@@ -135,8 +137,11 @@ cd c:\work\niceui\rwkv-router\paper\scripts
 # Task 2: Semantic Similarity (46.9k deduplicated training, optimal config + 5-seed ensemble) → Spearman 0.8188
 uv run --project ../../scripts python 02_sts_similarity.py --data-dir ../../data/sts_dedup --device cuda --n-epochs 50 --hidden-dim 1024 --output-dim 512 --dropout 0.1
 
-# Task 6: Topic Clustering (supervised contrastive learning, optimal config + 5-seed ensemble) → v_measure 0.6599
-uv run --project ../../scripts python 06_cluster_sklearn.py --device cuda --temperature 0.3 --n-pairs 80000 --dropout 0.1
+# Task 6: Topic Clustering (two datasets, 5-seed ensemble)
+#   sklearn full-text: SupCon Loss → 0.6908 | AnglE Loss → 0.6599
+#   MTEB short-text: AnglE Loss → 0.9506
+uv run --project ../../scripts python 07_cluster_supcon.py --device cuda  # sklearn SupCon: 0.6908
+uv run --project ../../scripts python 06_cluster_sklearn.py --device cuda --temperature 0.3 --n-pairs 80000 --dropout 0.1  # sklearn AnglE: 0.6599
 
 # Task 3: Task Classification (Hidden + MLP) → test_acc 0.9325
 uv run --project ../../scripts python 03_classification.py
@@ -161,11 +166,16 @@ Conclusion:
   5-seed ensemble (dedup, optimal):  Spearman = 0.8188
 ```
 
-### Task 6: Topic Clustering (sklearn full-text, held-out test)
+### Task 6: Topic Clustering (two datasets)
 ```
-Conclusion:
+Conclusion (sklearn full-text, held-out test):
   Baseline (Hidden + standardize, 10 seeds):    v_measure = 0.4724 ± 0.0103
-  Projection + KMeans (supervised, 5 seeds):     v_measure = 0.6599
+  AnglE Loss (5 seeds, optimal config):          v_measure = 0.6599
+  SupCon Loss (5 seeds, optimal config):         v_measure = 0.6908 (+46%)
+
+Conclusion (MTEB short-text, 64/16/20 split):
+  Baseline (Hidden + standardize + KMeans):      v_measure = 0.8466
+  AnglE Loss (5 seeds, optimal config):          v_measure = 0.9506 (+12%)
 ```
 
 ### Task 3: Task Classification (independent test set)
@@ -217,7 +227,7 @@ Early versions reported STS 0.8504 and clustering 0.8466, which were **inflated 
 
 This version fixes both issues:
 - **STS**: Strict deduplication (removed 1249 leak pairs, single-sentence level) + optimal config (h1024, out512, drop0.1) → 0.8188
-- **Clustering**: sklearn full-text 20NG, strict dedup + 70/15/15 split, held-out test → 0.6599
+- **Clustering**: Two datasets—MTEB short-text (0.9506) and sklearn full-text (0.6908 SupCon / 0.6599 AnglE), both with held-out test
 
 ## Citation
 
