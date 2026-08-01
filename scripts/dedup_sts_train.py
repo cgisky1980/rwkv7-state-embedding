@@ -49,8 +49,8 @@ def norm(s: str) -> str:
 
 
 def main():
-    src_dir = Path(__file__).resolve().parent.parent.parent / "data" / "sts"
-    out_dir = Path(__file__).resolve().parent.parent.parent / "data" / "sts_dedup"
+    src_dir = Path(__file__).resolve().parent.parent / "data" / "sts"
+    out_dir = Path(__file__).resolve().parent.parent / "data" / "sts_dedup"
     print(f"源目录:   {src_dir}")
     print(f"输出目录: {out_dir}\n")
 

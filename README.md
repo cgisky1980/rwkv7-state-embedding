@@ -51,7 +51,13 @@ paper/
 │   └── faster_251101/reference/      # reference implementation (rwkv7.py + cuda/)
 ├── models/                           # RWKV-7 0.4B model
 │   └── rwkv7-g1d-0.4b-20260210-ctx8192.pth
-├── cache_python/                     # feature cache (.npz)
+├── cache_python/                     # feature cache (.npz, git-ignored)
+├── data/                             # datasets (included in repo)
+│   ├── clustering/twentynewsgroups.jsonl    # MTEB short-text (59,545)
+│   ├── clustering_sklearn_20ng/             # sklearn full-text (18,253, 70/15/15 split)
+│   ├── sts/{sts_dev,sts_test}.jsonl          # STS-B evaluation
+│   ├── sts_dedup/{4 files}.jsonl            # STS training (46,898 pairs, deduplicated)
+│   └── golden_balanced.jsonl                 # classification (16,751)
 └── scripts/
     ├── 00_setup.py                   # environment setup (download model + copy source)
     ├── extract_features.py           # batched concurrent feature extraction (albatross)
@@ -104,20 +110,17 @@ cd c:\work\niceui\rwkv-router\paper\scripts
 uv run --project ../../scripts python 00_setup.py
 ```
 
-### Step 1: Download Datasets
+### Step 1: Datasets (included in repo)
 
-```powershell
-cd c:\work\niceui\rwkv-router
+Datasets are included in the `data/` directory (no download needed):
 
-# Download STS + clustering + classification datasets
-uv run --project scripts python scripts/download_embedding_eval_data.py
-```
+- `data/clustering/twentynewsgroups.jsonl` — MTEB short-text clustering (59,545 samples)
+- `data/clustering_sklearn_20ng/{train,dev,test}.jsonl` — sklearn full-text clustering (18,253 samples, deduplicated + 70/15/15 split)
+- `data/sts_dedup/{sts_train,nli_train,extra_train,sickr}.jsonl` — STS training data (46,898 pairs, deduplicated)
+- `data/sts/{sts_dev,sts_test}.jsonl` — STS-B evaluation data
+- `data/golden_balanced.jsonl` — classification data (16,751 samples)
 
-Datasets will be downloaded to:
-- `data/clustering/twentynewsgroups.jsonl` (clustering, 59545 samples)
-- `data/sts/sts_train.jsonl` etc. (STS-B)
-- `data/sts/nli_train.jsonl`, `extra_train.jsonl`, `sickr.jsonl` (extra training data)
-- `data/golden_balanced.jsonl` (classification)
+To regenerate datasets from source (optional), run `download_embedding_eval_data.py` + `dedup_sts_train.py` + `split_20ng_full.py`.
 
 ### Step 2: Extract Features (albatross concurrent inference)
 
@@ -145,7 +148,7 @@ cd c:\work\niceui\rwkv-router\paper\scripts
 cd c:\work\niceui\rwkv-router\paper\scripts
 
 # Task 2: Semantic Similarity (46.9k deduplicated training, optimal config + 5-seed ensemble) → Spearman 0.8188
-uv run --project ../../scripts python 02_sts_similarity.py --data-dir ../../data/sts_dedup --device cuda --n-epochs 50 --hidden-dim 1024 --output-dim 512 --dropout 0.1
+uv run --project ../../scripts python 02_sts_similarity.py --data-dir ../data/sts_dedup --device cuda --n-epochs 50 --hidden-dim 1024 --output-dim 512 --dropout 0.1
 
 # Task 6: Topic Clustering (two datasets, 5-seed ensemble)
 #   sklearn full-text: SupCon Loss → 0.6660 | AnglE Loss → 0.6373

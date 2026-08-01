@@ -15,7 +15,7 @@ AG News: 4类新闻 (World=0, Sports=1, Business=2, Tech=3)
 import json
 from pathlib import Path
 
-DATA_DIR = Path(__file__).resolve().parent.parent.parent / "data" / "ag_news"
+DATA_DIR = Path(__file__).resolve().parent.parent / "data" / "ag_news"
 
 
 def main():

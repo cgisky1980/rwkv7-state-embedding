@@ -41,7 +41,7 @@ from cache import save_npz  # noqa: E402
 PAPER_DIR = SCRIPT_DIR.parent
 MODEL_PATH = PAPER_DIR / "models" / "rwkv7-g1d-0.4b-20260210-ctx8192.pth"
 VOCAB_PATH = SCRIPT_DIR / "lib" / "rwkv_vocab_v20230424.txt"
-DATA_DIR = PAPER_DIR.parent / "data"
+DATA_DIR = PAPER_DIR / "data"
 OUTPUT_DIR = PAPER_DIR / "cache_python"
 
 # ============================================================

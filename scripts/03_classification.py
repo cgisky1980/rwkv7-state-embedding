@@ -131,7 +131,7 @@ def extract_multi_head(states, head_indices, head_size=HEAD_SIZE):
 def main():
     parser = argparse.ArgumentParser(description="任务三: 任务分类")
     parser.add_argument("--cache", type=Path, default=Path("../cache_python/classification_l12.npz"))
-    parser.add_argument("--data", type=Path, default=Path("../../data/golden_balanced.jsonl"))
+    parser.add_argument("--data", type=Path, default=Path("../data/golden_balanced.jsonl"))
     parser.add_argument("--top-k", type=int, default=8)
     parser.add_argument("--pca-dim", type=int, default=256)
     parser.add_argument("--n-epochs", type=int, default=30)

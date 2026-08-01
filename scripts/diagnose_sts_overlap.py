@@ -90,7 +90,7 @@ def check_overlap(train_records, eval_records, train_name, eval_name):
 
 
 def main():
-    data_dir = Path(__file__).resolve().parent.parent.parent / "data" / "sts"
+    data_dir = Path(__file__).resolve().parent.parent / "data" / "sts"
     print(f"数据目录: {data_dir}\n")
 
     # 加载 eval 数据

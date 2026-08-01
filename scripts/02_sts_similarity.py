@@ -182,7 +182,7 @@ def unsupervised_baseline(hiddens_test, scores_test):
 def main():
     parser = argparse.ArgumentParser(description="任务二: 语义相似度")
     parser.add_argument("--cache-dir", type=Path, default=Path("../cache_python"))
-    parser.add_argument("--data-dir", type=Path, default=Path("../../data/sts"))
+    parser.add_argument("--data-dir", type=Path, default=Path("../data/sts"))
     parser.add_argument("--temperature", type=float, default=0.50,
                         help="AnglE loss 温度 (albatross 路径最优 0.50, 非 Rust 路径的 0.1)")
     parser.add_argument("--n-epochs", type=int, default=50)
