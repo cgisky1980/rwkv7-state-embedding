@@ -104,7 +104,8 @@ def spearman_corr(x: np.ndarray, y: np.ndarray) -> float:
 # ============================================================
 # 训练
 # ============================================================
-def train_one(seed, train_data, dev_data, test_data, temperature=0.5, n_epochs=50, device="cpu"):
+def train_one(seed, train_data, dev_data, test_data, temperature=0.5, n_epochs=50, device="cpu",
+              hidden_dim=512, output_dim=128, dropout=0.2):
     torch.manual_seed(seed)
     np.random.seed(seed)
 
@@ -119,7 +120,7 @@ def train_one(seed, train_data, dev_data, test_data, temperature=0.5, n_epochs=5
     s2_test = test_data[1].to(device)
     scores_test_cpu = test_data[2]
 
-    model = MlpProj(input_dim=s1_train.shape[1], hidden_dim=512, output_dim=128, dropout=0.2).to(device)
+    model = MlpProj(input_dim=s1_train.shape[1], hidden_dim=hidden_dim, output_dim=output_dim, dropout=dropout).to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3, weight_decay=1e-3)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=n_epochs)
 
@@ -189,6 +190,9 @@ def main():
     parser.add_argument("--device", type=str, default="cpu")
     parser.add_argument("--no-extra", action="store_true",
                         help="仅用 STS-B train (baseline), 不用 NLI/extra_train/sickr")
+    parser.add_argument("--hidden-dim", type=int, default=512)
+    parser.add_argument("--output-dim", type=int, default=128)
+    parser.add_argument("--dropout", type=float, default=0.2)
     args = parser.parse_args()
 
     print("=" * 60, flush=True)
@@ -268,7 +272,8 @@ def main():
     for seed in args.seeds:
         t0 = time.time()
         dev_sp, test_sp, emb1_test, emb2_test, proj_state = train_one(
-            seed, train_data, dev_data, test_data, args.temperature, args.n_epochs, args.device
+            seed, train_data, dev_data, test_data, args.temperature, args.n_epochs, args.device,
+            hidden_dim=args.hidden_dim, output_dim=args.output_dim, dropout=args.dropout
         )
         all_emb_test.append((emb1_test, emb2_test))
         saved_projections.append(proj_state)
@@ -287,8 +292,9 @@ def main():
         "state_dicts": saved_projections,
         "config": {
             "input_dim": train_data[0].shape[1],
-            "hidden_dim": 512,
-            "output_dim": 128,
+            "hidden_dim": args.hidden_dim,
+            "output_dim": args.output_dim,
+            "dropout": args.dropout,
             "temperature": args.temperature,
             "train_pairs": len(train_data[2]),
         },

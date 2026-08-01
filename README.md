@@ -8,7 +8,7 @@ This repository systematically explores how to extract semantic embeddings from 
 
 | Task | Method | Metric | Comparison |
 |------|--------|--------|------------|
-| **Semantic Similarity** | Supervised Projection (46.9k pairs, deduplicated) + AnglE + 5-seed | Spearman=**0.8053** | Below bge-large ~0.85 (335M) and all-MiniLM-L6-v2 ~0.86 (22M); 0.86M projector params |
+| **Semantic Similarity** | Supervised Projection (46.9k pairs, deduplicated, optimal config) + AnglE + 5-seed | Spearman=**0.8188** | Below bge-large ~0.85 (335M) and all-MiniLM-L6-v2 ~0.86 (22M); 3.15M projector params |
 | **Topic Clustering (supervised)** | Supervised Contrastive Projection (sklearn full-text, held-out test) | v_measure=**0.6599** | vs unsupervised baseline 0.4724 (+40%); MTEB short-text unsupervised cap 0.33 |
 | **Task Classification** | Hidden + MLP (independent test set) | test_acc=**0.9325** | dev_acc=0.9381, head selection on dev only |
 
@@ -18,7 +18,7 @@ This repository systematically explores how to extract semantic embeddings from 
 
 | Task | Unsupervised | Supervised Projection | Improvement |
 |------|--------------|----------------------|-------------|
-| STS | 0.46 | 0.8053 | +75% |
+| STS | 0.46 | 0.8188 | +78% |
 | Clustering (sklearn full-text) | 0.4724 | 0.6599 | +40% |
 
 **Task-specific projectors cannot be mixed**: STS learns similarity ranking, clustering learns class separation—objectives differ (STS projection transfer to clustering fails: 0.14 < 0.34 baseline).
@@ -132,8 +132,8 @@ cd c:\work\niceui\rwkv-router\paper\scripts
 ```powershell
 cd c:\work\niceui\rwkv-router\paper\scripts
 
-# Task 2: Semantic Similarity (46.9k deduplicated training + 5-seed ensemble) → Spearman 0.8053
-uv run --project ../../scripts python 02_sts_similarity.py --data-dir ../../data/sts_dedup --device cuda --n-epochs 50
+# Task 2: Semantic Similarity (46.9k deduplicated training, optimal config + 5-seed ensemble) → Spearman 0.8188
+uv run --project ../../scripts python 02_sts_similarity.py --data-dir ../../data/sts_dedup --device cuda --n-epochs 50 --hidden-dim 1024 --output-dim 512 --dropout 0.1
 
 # Task 6: Topic Clustering (supervised contrastive learning, optimal config + 5-seed ensemble) → v_measure 0.6599
 uv run --project ../../scripts python 06_cluster_sklearn.py --device cuda --temperature 0.3 --n-pairs 80000 --dropout 0.1
@@ -158,7 +158,7 @@ uv run --project ../../scripts python 04_cluster_with_projection.py
 ```
 Conclusion:
   Unsupervised Hidden cosine:  Spearman = 0.4600
-  5-seed ensemble (dedup):     Spearman = 0.8053
+  5-seed ensemble (dedup, optimal):  Spearman = 0.8188
 ```
 
 ### Task 6: Topic Clustering (sklearn full-text, held-out test)
@@ -216,7 +216,7 @@ Early versions reported STS 0.8504 and clustering 0.8466, which were **inflated 
 - **Clustering**: Projector trained on 20NG labels then evaluated on the same 20NG (supervised clustering, not unsupervised)
 
 This version fixes both issues:
-- **STS**: Strict deduplication (removed 1249 leak pairs, single-sentence level) → 0.8053
+- **STS**: Strict deduplication (removed 1249 leak pairs, single-sentence level) + optimal config (h1024, out512, drop0.1) → 0.8188
 - **Clustering**: sklearn full-text 20NG, strict dedup + 70/15/15 split, held-out test → 0.6599
 
 ## Citation
