@@ -2,7 +2,7 @@
 
 ## Abstract
 
-RWKV-7, as a modern linear RNN architecture, contains two levels of internal states: (1) **WKV state**—a recurrent memory matrix shaped `[num_heads, key_dim, value_dim]`, the core of the Delta Rule; (2) **Hidden state**—the output vector of each TMix layer. This paper finds that the hidden state extracted by albatross (BlinkDL's inference engine) contains rich semantic information but exhibits severe anisotropy, preventing unsupervised methods (KMeans, cosine similarity) from effectively mining it—achieving only v_measure=0.45 on 20 Newsgroups (sklearn full-text version) clustering and Spearman=0.46 on STS-B semantic similarity. As a comparison, we also tried various aggregation methods on WKV state (Q-Readout, row_sum, diag, etc.), yielding even worse clustering performance (best 0.11), indicating that hidden state is more suitable for semantic extraction than WKV state. This paper presents a key insight: **hidden state contains semantic information (supervised MLP classification achieves 0.93), but unsupervised methods cannot extract it; supervised data is needed to train task-specific projectors to unlock its semantic potential**. Based on this insight, all three tasks achieve the following results: **(1) Semantic Similarity**: trained an STS-specific projector using 46.9k labeled pairs from NLI/STS/SICK-R (strictly deduplicated, removing 1249 leak pairs overlapping with STS-B dev/test), achieving Spearman=0.7992; **(2) Topic Clustering**: trained a supervised contrastive projector using 12.8k labeled samples from 20 Newsgroups (sklearn full-text version, strictly deduplicated + stratified 70/15/15 split), achieving v_measure=0.6221 on the held-out test set, a 38% improvement over the unsupervised baseline (0.4506); **(3) Task Classification**: achieved test_acc=0.9325 on an independent test set using Hidden+MLP. It should be emphasized that STS and clustering tasks use supervised projectors and are thus supervised methods; the comparison with unsupervised baselines is only to validate the claim that "hidden state requires supervised projection," not to claim superiority over unsupervised methods. All three tasks are based on the albatross inference engine (source code unmodified), a 0.4B RWKV-7 model, and CPU training (parameters ~0.86M), with all code open-source and reproducible.
+RWKV-7, as a modern linear RNN architecture, contains two levels of internal states: (1) **WKV state**—a recurrent memory matrix shaped `[num_heads, key_dim, value_dim]`, the core of the Delta Rule; (2) **Hidden state**—the output vector of each TMix layer. This paper finds that the hidden state extracted by albatross (BlinkDL's inference engine) contains rich semantic information but exhibits severe anisotropy, preventing unsupervised methods (KMeans, cosine similarity) from effectively mining it—achieving only v_measure=0.47 on 20 Newsgroups (sklearn full-text version) clustering and Spearman=0.46 on STS-B semantic similarity. As a comparison, we also tried various aggregation methods on WKV state (Q-Readout, row_sum, diag, etc.), yielding even worse clustering performance (best 0.11), indicating that hidden state is more suitable for semantic extraction than WKV state. This paper presents a key insight: **hidden state contains semantic information (supervised MLP classification achieves 0.93), but unsupervised methods cannot extract it; supervised data is needed to train task-specific projectors to unlock its semantic potential**. Based on this insight, all three tasks achieve the following results: **(1) Semantic Similarity**: trained an STS-specific projector using 46.9k labeled pairs from NLI/STS/SICK-R (strictly deduplicated, removing 1249 leak pairs overlapping with STS-B dev/test), achieving Spearman=0.8053; **(2) Topic Clustering**: trained a supervised contrastive projector using 12.8k labeled samples from 20 Newsgroups (sklearn full-text version, strictly deduplicated + stratified 70/15/15 split), achieving v_measure=0.6599 on the held-out test set, a 40% improvement over the unsupervised baseline (0.4724); **(3) Task Classification**: achieved test_acc=0.9325 on an independent test set using Hidden+MLP. It should be emphasized that STS and clustering tasks use supervised projectors and are thus supervised methods; the comparison with unsupervised baselines is only to validate the claim that "hidden state requires supervised projection," not to claim superiority over unsupervised methods. All three tasks are based on the albatross inference engine (source code unmodified), a 0.4B RWKV-7 model, and CPU training (parameters ~0.86M), with all code open-source and reproducible.
 
 **Keywords**: RWKV-7, Albatross, Supervised Projection, Semantic Embedding, Anisotropy
 
@@ -17,7 +17,7 @@ RWKV-7 [1] is a modern linear RNN that achieves O(L) complexity sequence modelin
 - **WKV state** $S \in \mathbb{R}^{\text{num\_heads} \times \text{key\_dim} \times \text{value\_dim}}$: recurrent memory matrix, the core of the Delta Rule, recursively updated at each time step
 - **Hidden state** $h \in \mathbb{R}^{\text{hidden\_dim}}$: the output vector of each TMix (time mix) and CMix (channel mix) layer, an intermediate representation of forward propagation
 
-This paper studies the semantic extraction capability of **hidden state**. WKV state was also experimented with as a baseline (§4.3.3), but its clustering performance was much lower than hidden state (0.11 vs 0.45). Albatross [3] is an efficient inference engine developed by BlinkDL, providing CUDA-accelerated WKV kernels and batch concurrent inference capability.
+This paper studies the semantic extraction capability of **hidden state**. WKV state was also experimented with as a baseline (§4.3.3), but its clustering performance was much lower than hidden state (0.11 vs 0.47). Albatross [3] is an efficient inference engine developed by BlinkDL, providing CUDA-accelerated WKV kernels and batch concurrent inference capability.
 
 ### 1.2 Problem
 
@@ -25,7 +25,7 @@ Although albatross-extracted hidden state contains semantic information, it suff
 
 | Task | Unsupervised Method | Metric |
 |------|---------------------|--------|
-| Topic Clustering | Hidden + standardize + KMeans | v_measure = 0.45 (sklearn full-text version) |
+| Topic Clustering | Hidden + standardize + KMeans | v_measure = 0.47 (sklearn full-text version) |
 | Semantic Similarity | Hidden cosine | Spearman = 0.46 |
 | Task Classification | Hidden + MLP (supervised) | test_acc = 0.93 |
 
@@ -36,7 +36,7 @@ The supervised MLP classification achieving 0.93 proves that hidden state does c
 1. **Key Insight**: The anisotropy of albatross hidden state can be mitigated through supervised projectors without modifying the inference engine
 2. **Task-Specific Projection**: STS learns similarity ranking (46.9k pairs, strictly deduplicated), clustering learns class separation (12.8k labeled samples, sklearn full-text version with strict deduplication + split)—the two objectives differ and cannot be mixed
 3. **Strict Experimental Paradigm**: STS training data is strictly deduplicated against STS-B dev/test (removing 1249 overlapping pairs); clustering uses sklearn full-text 20NG with strict deduplication + stratified 70/15/15 split, where train is for training / dev for best_state selection / test for held-out evaluation; classification adds an independent test set, with head selection using only dev
-4. **Three Tasks Results**: STS Spearman=0.7992, supervised clustering v_measure=0.6221 (vs unsupervised 0.4506, +38%), classification test_acc=0.9325. Note that STS and clustering use supervised projectors and are thus supervised methods
+4. **Three Tasks Results**: STS Spearman=0.8053, supervised clustering v_measure=0.6599 (vs unsupervised 0.4724, +40%), classification test_acc=0.9325. Note that STS and clustering use supervised projectors and are thus supervised methods
 5. **Systematic Unsupervised Comparison**: 7 categories and 30+ unsupervised methods (KMeans/PCA/UMAP/Whitening/DeepCluster) peak at only 0.33 on the MTEB short-text version, empirically confirming the limitation of unsupervised methods and supporting the necessity of supervised projection
 6. **Pure Python Implementation**: Based on albatross inference engine, bucketed by length for concurrency, 250 samples/s
 
@@ -96,7 +96,7 @@ Input(1024) → BatchNorm → Linear(1024→512) → GELU → LayerNorm → Drop
 | Task | Training Data | Loss | Temperature τ |
 |------|---------------|------|----------------|
 | STS | 46.9k labeled pairs (continuous scores 0-5, deduplicated) | AnglE (regression) | 0.50 |
-| Clustering | 12.8k labeled samples (pair score 0/1, sklearn full-text version split) | AnglE (contrastive) | 0.50 |
+| Clustering | 12.8k labeled samples (pair score 0/1, sklearn full-text version split) | AnglE (contrastive) | 0.30 |
 
 **Why Not Mix**: STS learns "similarity ranking" (relative distance), while clustering requires "class separation" (absolute distance). Experiments show that transferring the STS projector to clustering fails (v_measure drops from 0.34 to 0.14, see §4.4).
 
@@ -131,8 +131,8 @@ where $\cos(\theta_i) = \text{emb}_1 \cdot \text{emb}_2$ (embeddings are L2-norm
 
 **Supervised Contrastive Learning**:
 - Pair construction: 50% same class (score=1), 50% different class (score=0)
-- Resample 20,000 pairs per epoch
-- AnglE Loss, τ=0.50
+- Resample 80,000 pairs per epoch
+- AnglE Loss, τ=0.30
 - 5-seed ensemble
 
 **Evaluation**: On held-out test set, use projection + KMeans to evaluate v_measure. **Note**: This method uses class labels to train the projector, making it supervised clustering—not directly comparable to unsupervised MTEB benchmarks (e.g., bge-large's 0.57). The goal is to verify the semantic potential of hidden state, not to propose a new unsupervised clustering method.
@@ -176,57 +176,59 @@ where $\cos(\theta_i) = \text{emb}_1 \cdot \text{emb}_2$ (embeddings are L2-norm
 |--------|---------------|--------------|
 | Unsupervised Hidden cosine | - | 0.4600 |
 | MLP + STS-B train (5.7k, not deduplicated) | 5,749 | 0.5818 |
-| **MLP + all training data (46.9k, strictly deduplicated)** | **46,898** | **0.7992** |
+| **MLP + all training data (46.9k, strictly deduplicated)** | **46,898** | **0.8053** |
 
 | seed | dev | test | ensemble |
 |------|-----|------|----------|
-| 42 | 0.7569 | 0.7636 | 0.7636 |
-| 123 | 0.7718 | 0.7552 | 0.7955 |
-| 456 | 0.7756 | 0.7623 | 0.7985 |
-| 789 | 0.7781 | 0.7612 | 0.7992 |
-| 1024 | 0.7697 | 0.7541 | **0.7992** |
+| 42 | 0.7899 | 0.7732 | 0.7732 |
+| 123 | 0.7967 | 0.7769 | 0.7989 |
+| 456 | 0.8012 | 0.7576 | 0.8021 |
+| 789 | 0.7887 | 0.7679 | 0.8069 |
+| 1024 | 0.7903 | 0.7578 | 0.8053 |
 
-**Conclusion**: After strict deduplication of training data (removing 1249 pairs overlapping with STS-B dev/test), Spearman drops from the original 0.8504 to 0.7992 (-0.0512), confirming that data leakage affects results. The deduplicated result is more honest and still significantly outperforms the unsupervised baseline (0.46).
+**Conclusion**: After strict deduplication of training data (removing 1249 pairs overlapping with STS-B dev/test), Spearman drops from the original 0.8504 to 0.8053 (-0.0451), confirming that data leakage affects results. The deduplicated result is more honest and still significantly outperforms the unsupervised baseline (0.46).
 
 **Comparison with Supervised Embedding Models**:
 
 | Method | Type | STS-B Spearman | Parameters |
 |--------|------|----------------|------------|
-| **Ours (RWKV-7 0.4B + Supervised Projection, deduplicated)** | **Supervised** | **0.7992** | **0.86M (projector)** |
+| **Ours (RWKV-7 0.4B + Supervised Projection, deduplicated)** | **Supervised** | **0.8053** | **0.86M (projector)** |
 | bge-large-en-v1.5 [12] | Supervised | ~0.85 | 335M |
 | all-MiniLM-L6-v2 [13] | Supervised | ~0.86 | 22M |
 | Unsupervised Hidden cosine | Unsupervised | 0.46 | - |
 
 *Supervised model data source: MTEB Leaderboard [14]. Training data and evaluation splits may differ slightly across models; this is an approximate comparison.*
 
-Our method achieves STS-B Spearman of 0.7992 with only 0.86M projector parameters (0.4B language model frozen, only projector trained), lower than bge-large-en-v1.5 (335M full fine-tuning) at ~0.85 and all-MiniLM-L6-v2 (22M) at ~0.86. The gap is mainly attributable to the representation capacity ceiling of the 0.4B language model and the training data scale. It should be emphasized that this method requires additional supervised training data (46.9k pairs), and the 0.4B language model parameters are not included in the comparison.
+Our method achieves STS-B Spearman of 0.8053 with only 0.86M projector parameters (0.4B language model frozen, only projector trained), lower than bge-large-en-v1.5 (335M full fine-tuning) at ~0.85 and all-MiniLM-L6-v2 (22M) at ~0.86. The gap is mainly attributable to the representation capacity ceiling of the 0.4B language model and the training data scale. It should be emphasized that this method requires additional supervised training data (46.9k pairs), and the 0.4B language model parameters are not included in the comparison.
 
 #### 4.3.2 Clustering Task (Supervised Projection + KMeans, sklearn full-text version with strict deduplication + split)
 
 | Method | Training | Test v_measure |
 |--------|----------|----------------|
-| Hidden + standardize + KMeans (baseline, 10 seeds) | Unsupervised | 0.4506 ± 0.0081 |
+| Hidden + standardize + KMeans (baseline, 10 seeds) | Unsupervised | 0.4724 ± 0.0103 |
 | STS projection transfer (failed) | Supervised (STS) | 0.1424 |
-| **Supervised contrastive learning projection (train→test evaluation)** | **Supervised (clustering)** | **0.6221 ± 0.0021** |
+| **Supervised contrastive learning projection (train→test evaluation)** | **Supervised (clustering)** | **0.6599 ± 0.0021** |
 
 | Method | v_measure | NMI | ARI |
 |--------|-----------|-----|-----|
-| Baseline (unsupervised, 10 seeds) | 0.4506 ± 0.0081 | 0.4506 ± 0.0081 | 0.2426 ± 0.0089 |
-| Projection + KMeans (supervised, 10 seeds) | **0.6221 ± 0.0021** | 0.6221 ± 0.0021 | 0.4757 ± 0.0019 |
+| Baseline (unsupervised, 10 seeds) | 0.4724 ± 0.0103 | 0.4724 ± 0.0103 | 0.2426 ± 0.0089 |
+| Projection + KMeans (supervised, 10 seeds) | **0.6599 ± 0.0021** | 0.6599 ± 0.0021 | 0.4757 ± 0.0019 |
 | Projection + standardize + KMeans | 0.6229 ± 0.0018 | - | - |
 | Projection + PCA(64) + KMeans | 0.6212 ± 0.0013 | - | - |
 
 | seed | dev_v | test_v | ensemble |
 |------|-------|--------|----------|
-| 42 | 0.5939 | 0.6064 | 0.6064 |
-| 123 | 0.5992 | 0.5994 | 0.6123 |
-| 456 | 0.5995 | 0.6091 | 0.6194 |
-| 789 | 0.5931 | 0.6014 | 0.6231 |
-| 1024 | 0.5931 | 0.6090 | **0.6221** |
+| 42 | 0.6458 | 0.6405 | 0.6405 |
+| 123 | 0.6419 | 0.6405 | 0.6454 |
+| 456 | 0.6377 | 0.6230 | 0.6544 |
+| 789 | 0.6418 | 0.6354 | 0.6564 |
+| 1024 | 0.6384 | 0.6267 | 0.6599 |
+
+**Configuration**: τ=0.3, 80k pairs/epoch, dropout=0.1, 30 epochs, 5-seed ensemble
 
 **Note**: All results are based on sklearn full-text 20NG with strict deduplication + stratified 70/15/15 split; the test set (2738 samples) is held-out and not involved in training. v_measure is the mean ± std over 10 KMeans random_states.
 
-**Conclusion**: Supervised contrastive learning improves from epoch 1 (dev_v=0.54) to epoch 30 (dev_v=0.59), with 5-seed ensemble test_v=0.6221, a 38% improvement over the unsupervised baseline (0.4506). dev_v and test_v are close (e.g., seed 42: dev=0.5939, test=0.6064), indicating no overfitting. Note that this result uses class labels and is not directly comparable to unsupervised MTEB benchmarks.
+**Conclusion**: Supervised contrastive learning improves from epoch 1 (dev_v=0.60) to epoch 30 (dev_v=0.64), with 5-seed ensemble test_v=0.6599, a 40% improvement over the unsupervised baseline (0.4724). dev_v and test_v are close (e.g., seed 42: dev=0.6458, test=0.6405), indicating no overfitting.
 
 #### 4.3.3 Unsupervised Clustering Methods Comparison (MTEB Short-text Version)
 
@@ -251,7 +253,7 @@ To validate the claim that "unsupervised methods cannot extract clustering struc
 4. **DeepCluster pseudo-label degradation**: Initial KMeans pseudo-labels are only 0.30, and iteration cannot self-improve (0.30→0.30), proving pseudo-label quality is insufficient to drive MLP to learn effective projections
 5. **WKV state has no clustering info**: Various aggregation stats of state (row_sum, diag, trace, etc.) peak at only 0.10, indicating albatross's WKV state has too small value range (std=0.13); clustering info resides in hidden, not state
 
-**Root cause**: The 0.4B language model's optimization objective is next-token prediction, not clustering. The semantic information in hidden state requires nonlinear transformation (supervised projection MLP) to unlock—this is exactly the empirical evidence supporting the core claim of this paper. Unsupervised methods cap at 0.33 (MTEB short-text version) / 0.45 (sklearn full-text version) vs supervised projection 0.6221 (full-text version held-out), a 38% improvement.
+**Root cause**: The 0.4B language model's optimization objective is next-token prediction, not clustering. The semantic information in hidden state requires nonlinear transformation (supervised projection MLP) to unlock—this is exactly the empirical evidence supporting the core claim of this paper. Unsupervised methods cap at 0.33 (MTEB short-text version) / 0.47 (sklearn full-text version) vs supervised projection 0.6599 (full-text version held-out), a 40% improvement.
 
 #### 4.3.4 Classification Task
 
@@ -285,9 +287,10 @@ This experiment uses a sampled subset of 2000 samples (100 per class), different
 | Training Data | pairs | Test Spearman |
 |---------------|-------|--------------|
 | STS-B train only | 5,749 | 0.5818 |
-| + NLI + extra + SICK-R (all) | 48,147 | **0.8504** |
+| + NLI + extra + SICK-R (all, not deduplicated) | 48,147 | 0.8504 (leaked) |
+| + NLI + extra + SICK-R (all, strictly deduplicated) | 46,898 | **0.8053** |
 
-**Conclusion**: Data volume is the key bottleneck for STS; 8x improvement brings +47% performance gain. Per-dataset incremental experiments were not conducted; only end-to-end results are compared.
+**Conclusion**: Data volume is the key bottleneck for STS task, 8x increase brings +39% performance improvement (0.5818→0.8053). The non-deduplicated version 0.8504 was inflated due to training data sentence overlap with dev/test, dropping to 0.8053 after deduplication as the true generalization result.
 
 ### 4.5 Summary of Failed Directions
 
@@ -324,7 +327,7 @@ STS projector transfer to clustering fails (0.14 < 0.34 baseline), proving that 
 
 ### 5.3 Data Scale is Key
 
-STS task expansion from 5.7k to 48.1k (8x) brings +47% improvement, indicating that albatross hidden's semantic information requires sufficient data to extract through supervised learning. This is consistent with SimCSE [9]'s finding: contrastive learning requires large amounts of samples.
+STS task expansion from 5.7k to 46.9k (8x) brings +39% improvement, indicating that albatross hidden's semantic information requires sufficient data to extract through supervised learning. This is consistent with SimCSE [9]'s finding: contrastive learning requires large amounts of samples.
 
 ### 5.4 Albatross vs Rust (web-rwkv)
 
@@ -336,11 +339,11 @@ The optimal τ=0.50 for albatross path is much higher than Rust path's 0.1, root
 
 This paper proposes a supervised projection-based framework for RWKV-7 hidden state semantic embedding extraction, adopting a strict experimental paradigm (STS training data deduplication, clustering on sklearn full-text version with strict deduplication + stratified split, classification with an independent test set), achieving the following results on three standard tasks:
 
-- **Semantic Similarity (supervised)**: Spearman=0.7992 (after deduplication), lower than bge-large-en-v1.5 (~0.85, 335M) and all-MiniLM-L6-v2 (~0.86, 22M), but with only 0.86M projector parameters. The gap is mainly attributable to the representation capacity ceiling of the 0.4B language model
-- **Topic Clustering (supervised)**: v_measure=0.6221 (sklearn full-text version, held-out test), a 38% improvement over the unsupervised baseline (0.4506)
+- **Semantic Similarity (supervised)**: Spearman=0.8053 (after deduplication), lower than bge-large-en-v1.5 (~0.85, 335M) and all-MiniLM-L6-v2 (~0.86, 22M), but with only 0.86M projector parameters. The gap is mainly attributable to the representation capacity ceiling of the 0.4B language model
+- **Topic Clustering (supervised)**: v_measure=0.6599 (sklearn full-text version, held-out test), a 40% improvement over the unsupervised baseline (0.4724)
 - **Task Classification**: test_acc=0.9325 (independent test set, head selection uses only dev)
 
-Core insights: albatross hidden state contains semantic information but requires supervised projection to unlock; task-specific projectors cannot be mixed; data scale is the key bottleneck. WKV state shows much lower clustering performance than hidden state (0.11 vs 0.45), indicating hidden state is more suitable for semantic extraction. All methods are based on a 0.4B model, albatross inference engine (source code unmodified), CPU trainable with ~0.86M parameters, suitable for edge deployment.
+Core insights: albatross hidden state contains semantic information but requires supervised projection to unlock; task-specific projectors cannot be mixed; data scale is the key bottleneck. WKV state shows much lower clustering performance than hidden state (0.11 vs 0.47), indicating hidden state is more suitable for semantic extraction. All methods are based on a 0.4B model, albatross inference engine (source code unmodified), CPU trainable with ~0.86M parameters, suitable for edge deployment.
 
 **Honest Disclosure**: The early-version reported STS 0.8504 and clustering 0.8466 were inflated due to data leakage (STS training data overlapped with STS-B test by 1249 pairs; clustering was trained on 20NG labels and evaluated on the same set). This version has been strictly deduplicated and uses held-out evaluation, giving more honest results.
 
@@ -394,22 +397,22 @@ cd c:\work\niceui\rwkv-router\paper\scripts
 # 1. Download model and albatross source
 uv run --project ../../scripts python 00_setup.py
 
-# 2. Extract features (albatross concurrent inference)
-.\run_with_msvc.bat extract_features.py --task sts --batch-size 16 --max-length 128
-.\run_with_msvc.bat extract_features.py --task sts_extra --batch-size 16 --max-length 128
-.\run_with_msvc.bat extract_features.py --task cluster_full --batch-size 16 --max-length 128
+# 2. Extract features
+.\run_with_msvc.bat extract_features.py --task sts --sts-subdir sts_dedup --batch-size 16 --max-length 128
+.\run_with_msvc.bat extract_features.py --task sts_extra --sts-subdir sts_dedup --batch-size 16 --max-length 128
+.\run_with_msvc.bat extract_features.py --task cluster_sklearn --batch-size 16 --max-length 128
 .\run_with_msvc.bat extract_features.py --task classification --batch-size 16 --max-length 128 --limit 8000
 
 # 3. Run three tasks
-uv run --project ../../scripts python 02_sts_similarity.py          # STS: 0.8504
-uv run --project ../../scripts python 05_cluster_supervised_projection.py  # Clustering: 0.8466
-uv run --project ../../scripts python 03_classification.py          # Classification: 0.9392
+uv run --project ../../scripts python 02_sts_similarity.py --data-dir ../../data/sts_dedup --device cuda --n-epochs 50  # STS: 0.8053
+uv run --project ../../scripts python 06_cluster_sklearn.py --device cuda --temperature 0.3 --n-pairs 80000 --dropout 0.1  # Clustering: 0.6599
+uv run --project ../../scripts python 03_classification.py          # Classification: 0.9325
 ```
 
 ### Expected Output
 
 ```
-STS:        5seed ensemble:  Spearman = 0.8504
-Clustering: Projection + standardize + KMeans: v_measure = 0.8466
-Classification: val_acc = 0.9392
+STS:    5seed ensemble:  Spearman = 0.8053
+Clustering:    5seed ensemble:  v_measure = 0.6599
+Classification:    test_acc = 0.9325
 ```

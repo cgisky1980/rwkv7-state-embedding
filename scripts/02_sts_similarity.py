@@ -108,9 +108,16 @@ def train_one(seed, train_data, dev_data, test_data, temperature=0.5, n_epochs=5
     torch.manual_seed(seed)
     np.random.seed(seed)
 
-    s1_train, s2_train, scores_train = train_data
-    s1_dev, s2_dev, scores_dev = dev_data
-    s1_test, s2_test, scores_test = test_data
+    # 一次性把所有数据移到 device (避免每 batch .to() 传输开销)
+    s1_train = train_data[0].to(device)
+    s2_train = train_data[1].to(device)
+    scores_train = train_data[2].to(device)
+    s1_dev = dev_data[0].to(device)
+    s2_dev = dev_data[1].to(device)
+    scores_dev_cpu = dev_data[2]
+    s1_test = test_data[0].to(device)
+    s2_test = test_data[1].to(device)
+    scores_test_cpu = test_data[2]
 
     model = MlpProj(input_dim=s1_train.shape[1], hidden_dim=512, output_dim=128, dropout=0.2).to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3, weight_decay=1e-3)
@@ -119,16 +126,18 @@ def train_one(seed, train_data, dev_data, test_data, temperature=0.5, n_epochs=5
     best_dev_sp = -1.0
     best_state = None
     n_train = len(scores_train)
-    batch_size = 256
+    # GPU 用大 batch, CPU 用小 batch
+    is_cuda = device != "cpu" and "cuda" in str(device)
+    batch_size = 4096 if is_cuda else 256
 
     for epoch in range(n_epochs):
         model.train()
-        perm = torch.randperm(n_train)
+        perm = torch.randperm(n_train, device=device)
         for i in range(0, n_train, batch_size):
-            idx = perm[i : i + batch_size]
-            emb1 = model(s1_train[idx].to(device))
-            emb2 = model(s2_train[idx].to(device))
-            loss = angle_loss(emb1, emb2, scores_train[idx].to(device), temperature)
+            idx = perm[i:i + batch_size]
+            emb1 = model(s1_train[idx])
+            emb2 = model(s2_train[idx])
+            loss = angle_loss(emb1, emb2, scores_train[idx], temperature)
             optimizer.zero_grad()
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
@@ -137,21 +146,21 @@ def train_one(seed, train_data, dev_data, test_data, temperature=0.5, n_epochs=5
 
         model.eval()
         with torch.no_grad():
-            emb1_dev = model(s1_dev.to(device)).cpu().numpy()
-            emb2_dev = model(s2_dev.to(device)).cpu().numpy()
-        dev_sp = spearman_corr((emb1_dev * emb2_dev).sum(axis=1), scores_dev.numpy())
+            emb1_dev = model(s1_dev).cpu().numpy()
+            emb2_dev = model(s2_dev).cpu().numpy()
+        dev_sp = spearman_corr((emb1_dev * emb2_dev).sum(axis=1), scores_dev_cpu.numpy())
         if dev_sp > best_dev_sp:
             best_dev_sp = dev_sp
-            best_state = {k: v.clone() for k, v in model.state_dict().items()}
+            best_state = {k: v.detach().clone() for k, v in model.state_dict().items()}
 
     model.load_state_dict(best_state)
     model.eval()
     with torch.no_grad():
-        emb1_test = model(s1_test.to(device)).cpu().numpy()
-        emb2_test = model(s2_test.to(device)).cpu().numpy()
+        emb1_test = model(s1_test).cpu().numpy()
+        emb2_test = model(s2_test).cpu().numpy()
 
     cos_test = (emb1_test * emb2_test).sum(axis=1)
-    test_sp = spearman_corr(cos_test, scores_test.numpy())
+    test_sp = spearman_corr(cos_test, scores_test_cpu.numpy())
     return best_dev_sp, test_sp, emb1_test, emb2_test, best_state
 
 

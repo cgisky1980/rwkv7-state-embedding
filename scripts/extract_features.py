@@ -40,7 +40,7 @@ from cache import save_npz  # noqa: E402
 # ============================================================
 PAPER_DIR = SCRIPT_DIR.parent
 MODEL_PATH = PAPER_DIR / "models" / "rwkv7-g1d-0.4b-20260210-ctx8192.pth"
-VOCAB_PATH = PAPER_DIR / "albatross_src" / "faster_251101" / "reference" / "rwkv_vocab_v20230424.txt"
+VOCAB_PATH = SCRIPT_DIR / "lib" / "rwkv_vocab_v20230424.txt"
 DATA_DIR = PAPER_DIR.parent / "data"
 OUTPUT_DIR = PAPER_DIR / "cache_python"
 
@@ -126,14 +126,14 @@ def run_cluster_full(model, tokenizer, args) -> None:
 def run_cluster_20ng_full(model, tokenizer, args) -> None:
     """任务: 提取 sklearn 全文版 20NG 严格去重 split 的特征
 
-    数据: data/clustering_20ng_full/{train,dev,test}.jsonl
-    输出: cache_python/cluster_20ng_full_l{layer}_{split}.npz
+    数据: data/clustering_sklearn_20ng/{train,dev,test}.jsonl
+    输出: cache_python/cluster_sklearn_20ng_l{layer}_{split}.npz
     """
     print("\n" + "=" * 60, flush=True)
     print("任务: 20NG (sklearn 全文, 严格去重 split) 特征提取", flush=True)
     print("=" * 60, flush=True)
 
-    data_dir = DATA_DIR / "clustering_20ng_full"
+    data_dir = DATA_DIR / "clustering_sklearn_20ng"
     for split in ["train", "dev", "test"]:
         data_path = data_dir / f"{split}.jsonl"
         if not data_path.exists():
@@ -149,7 +149,7 @@ def run_cluster_20ng_full(model, tokenizer, args) -> None:
             model, tokenizer, texts, args.batch_size, args.max_length, layer=args.layer
         )
 
-        out_path = OUTPUT_DIR / f"cluster_20ng_full_l{args.layer}_{split}.npz"
+        out_path = OUTPUT_DIR / f"cluster_sklearn_20ng_l{args.layer}_{split}.npz"
         save_npz(out_path, states, hiddens, extra={"labels": labels})
 
 
@@ -183,7 +183,7 @@ def run_sts(model, tokenizer, args) -> None:
             sentences.append(r["sentence1"])
             sentences.append(r["sentence2"])
 
-        states, hiddens = extract_features(
+        states, hiddens = extract_features_batch(
             model, tokenizer, sentences, args.batch_size, args.max_length, layer=args.layer
         )
 
@@ -266,7 +266,7 @@ def main():
     parser = argparse.ArgumentParser(description="批量并发特征提取 (albatross 官方推理)")
     parser.add_argument(
         "--task",
-        choices=["cluster", "cluster_full", "cluster_20ng_full", "sts", "sts_extra", "classification", "all"],
+        choices=["cluster", "cluster_full", "cluster_sklearn", "sts", "sts_extra", "classification", "all"],
         default="all",
         help="运行哪个任务",
     )
@@ -300,7 +300,7 @@ def main():
         run_cluster(model, tokenizer, args)
     if args.task in ("cluster_full",):
         run_cluster_full(model, tokenizer, args)
-    if args.task in ("cluster_20ng_full",):
+    if args.task in ("cluster_sklearn",):
         run_cluster_20ng_full(model, tokenizer, args)
     if args.task in ("sts", "all"):
         run_sts(model, tokenizer, args)

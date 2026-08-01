@@ -8,18 +8,18 @@ This repository systematically explores how to extract semantic embeddings from 
 
 | Task | Method | Metric | Comparison |
 |------|--------|--------|------------|
-| **Semantic Similarity** | Supervised Projection (46.9k pairs, deduplicated) + AnglE + 5-seed | Spearman=**0.7992** | Below bge-large ~0.85 (335M) and all-MiniLM-L6-v2 ~0.86 (22M); 0.86M projector params |
-| **Topic Clustering (supervised)** | Supervised Contrastive Projection (sklearn full-text, held-out test) | v_measure=**0.6221 ± 0.0021** | vs unsupervised baseline 0.4506 (+38%); MTEB short-text unsupervised cap 0.33 |
+| **Semantic Similarity** | Supervised Projection (46.9k pairs, deduplicated) + AnglE + 5-seed | Spearman=**0.8053** | Below bge-large ~0.85 (335M) and all-MiniLM-L6-v2 ~0.86 (22M); 0.86M projector params |
+| **Topic Clustering (supervised)** | Supervised Contrastive Projection (sklearn full-text, held-out test) | v_measure=**0.6599** | vs unsupervised baseline 0.4724 (+40%); MTEB short-text unsupervised cap 0.33 |
 | **Task Classification** | Hidden + MLP (independent test set) | test_acc=**0.9325** | dev_acc=0.9381, head selection on dev only |
 
 ## Key Insight
 
-**Albatross hidden state contains semantic information (supervised classification reaches 0.93), but unsupervised methods cannot extract it (STS 0.46, clustering 0.45 on sklearn full-text / 0.33 on MTEB short-text); supervised projectors are needed to unlock its potential.**
+**Albatross hidden state contains semantic information (supervised classification reaches 0.93), but unsupervised methods cannot extract it (STS 0.46, clustering 0.47 on sklearn full-text / 0.33 on MTEB short-text); supervised projectors are needed to unlock its potential.**
 
 | Task | Unsupervised | Supervised Projection | Improvement |
 |------|--------------|----------------------|-------------|
-| STS | 0.46 | 0.7992 | +74% |
-| Clustering (sklearn full-text) | 0.4506 | 0.6221 | +38% |
+| STS | 0.46 | 0.8053 | +75% |
+| Clustering (sklearn full-text) | 0.4724 | 0.6599 | +40% |
 
 **Task-specific projectors cannot be mixed**: STS learns similarity ranking, clustering learns class separation—objectives differ (STS projection transfer to clustering fails: 0.14 < 0.34 baseline).
 
@@ -132,13 +132,13 @@ cd c:\work\niceui\rwkv-router\paper\scripts
 ```powershell
 cd c:\work\niceui\rwkv-router\paper\scripts
 
-# Task 2: Semantic Similarity (48.1k training + 5-seed ensemble) → Spearman 0.8504
-uv run --project ../../scripts python 02_sts_similarity.py
+# Task 2: Semantic Similarity (46.9k deduplicated training + 5-seed ensemble) → Spearman 0.8053
+uv run --project ../../scripts python 02_sts_similarity.py --data-dir ../../data/sts_dedup --device cuda --n-epochs 50
 
-# Task 5: Topic Clustering (supervised contrastive learning + 5-seed ensemble) → v_measure 0.8466
-uv run --project ../../scripts python 05_cluster_supervised_projection.py
+# Task 6: Topic Clustering (supervised contrastive learning, optimal config + 5-seed ensemble) → v_measure 0.6599
+uv run --project ../../scripts python 06_cluster_sklearn.py --device cuda --temperature 0.3 --n-pairs 80000 --dropout 0.1
 
-# Task 3: Task Classification (Hidden + MLP) → val_acc 0.9392
+# Task 3: Task Classification (Hidden + MLP) → test_acc 0.9325
 uv run --project ../../scripts python 03_classification.py
 ```
 
@@ -158,16 +158,14 @@ uv run --project ../../scripts python 04_cluster_with_projection.py
 ```
 Conclusion:
   Unsupervised Hidden cosine:  Spearman = 0.4600
-  5-seed ensemble (dedup):     Spearman = 0.7992
+  5-seed ensemble (dedup):     Spearman = 0.8053
 ```
 
 ### Task 6: Topic Clustering (sklearn full-text, held-out test)
 ```
 Conclusion:
-  Baseline (Hidden + standardize, 10 seeds):    v_measure = 0.4506 ± 0.0081
-  Projection + KMeans (supervised, 10 seeds):   v_measure = 0.6221 ± 0.0021
-  Projection + standardize + KMeans:            v_measure = 0.6229 ± 0.0018
-  Projection + PCA(64) + KMeans:                  v_measure = 0.6212 ± 0.0013
+  Baseline (Hidden + standardize, 10 seeds):    v_measure = 0.4724 ± 0.0103
+  Projection + KMeans (supervised, 5 seeds):     v_measure = 0.6599
 ```
 
 ### Task 3: Task Classification (independent test set)
@@ -218,8 +216,8 @@ Early versions reported STS 0.8504 and clustering 0.8466, which were **inflated 
 - **Clustering**: Projector trained on 20NG labels then evaluated on the same 20NG (supervised clustering, not unsupervised)
 
 This version fixes both issues:
-- **STS**: Strict deduplication (removed 1249 leak pairs, single-sentence level) → 0.7992
-- **Clustering**: sklearn full-text 20NG, strict dedup + 70/15/15 split, held-out test → 0.6221
+- **STS**: Strict deduplication (removed 1249 leak pairs, single-sentence level) → 0.8053
+- **Clustering**: sklearn full-text 20NG, strict dedup + 70/15/15 split, held-out test → 0.6599
 
 ## Citation
 
