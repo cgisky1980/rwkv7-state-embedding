@@ -123,14 +123,53 @@ def run_cluster_full(model, tokenizer, args) -> None:
     save_npz(out_path, states, hiddens, extra={"labels": labels})
 
 
+def run_cluster_20ng_full(model, tokenizer, args) -> None:
+    """任务: 提取 sklearn 全文版 20NG 严格去重 split 的特征
+
+    数据: data/clustering_20ng_full/{train,dev,test}.jsonl
+    输出: cache_python/cluster_20ng_full_l{layer}_{split}.npz
+    """
+    print("\n" + "=" * 60, flush=True)
+    print("任务: 20NG (sklearn 全文, 严格去重 split) 特征提取", flush=True)
+    print("=" * 60, flush=True)
+
+    data_dir = DATA_DIR / "clustering_20ng_full"
+    for split in ["train", "dev", "test"]:
+        data_path = data_dir / f"{split}.jsonl"
+        if not data_path.exists():
+            print(f"  [skip] {data_path} 不存在", flush=True)
+            continue
+        records = read_jsonl(data_path)
+        print(f"\n  -- {split} -- ({len(records)} samples)", flush=True)
+
+        texts = [r["text"] for r in records]
+        labels = np.array([r["label"] for r in records], dtype=np.int32)
+
+        states, hiddens = extract_features_batch(
+            model, tokenizer, texts, args.batch_size, args.max_length, layer=args.layer
+        )
+
+        out_path = OUTPUT_DIR / f"cluster_20ng_full_l{args.layer}_{split}.npz"
+        save_npz(out_path, states, hiddens, extra={"labels": labels})
+
+
 def run_sts(model, tokenizer, args) -> None:
     """任务二: 语义相似度 - STS-Benchmark"""
     print("\n" + "=" * 60, flush=True)
     print("任务二: 语义相似度 (STS-Benchmark)", flush=True)
     print("=" * 60, flush=True)
 
+    # 支持 --sts-subdir 切换到去重后的数据目录
+    sts_subdir = getattr(args, "sts_subdir", "sts")
+    sts_dir = DATA_DIR / sts_subdir
+    print(f"  STS 数据目录: {sts_dir}", flush=True)
+
     for split in ["train", "dev", "test"]:
-        data_path = DATA_DIR / "sts" / f"sts_{split}.jsonl"
+        # train 可能来自 dedup 目录（sts_train.jsonl），dev/test 始终从原 sts 目录读取（eval 不去重）
+        if split == "train" and sts_subdir != "sts":
+            data_path = sts_dir / f"sts_{split}.jsonl"
+        else:
+            data_path = DATA_DIR / "sts" / f"sts_{split}.jsonl"
         if not data_path.exists():
             print(f"  [skip] {data_path} 不存在", flush=True)
             continue
@@ -169,8 +208,11 @@ def run_sts_extra(model, tokenizer, args) -> None:
     print("=" * 60, flush=True)
 
     datasets = ["nli_train", "extra_train", "sickr"]
+    sts_subdir = getattr(args, "sts_subdir", "sts")
+    sts_dir = DATA_DIR / sts_subdir
+    print(f"  STS 数据目录: {sts_dir}", flush=True)
     for name in datasets:
-        data_path = DATA_DIR / "sts" / f"{name}.jsonl"
+        data_path = sts_dir / f"{name}.jsonl"
         if not data_path.exists():
             print(f"  [skip] {data_path} 不存在", flush=True)
             continue
@@ -224,7 +266,7 @@ def main():
     parser = argparse.ArgumentParser(description="批量并发特征提取 (albatross 官方推理)")
     parser.add_argument(
         "--task",
-        choices=["cluster", "cluster_full", "sts", "sts_extra", "classification", "all"],
+        choices=["cluster", "cluster_full", "cluster_20ng_full", "sts", "sts_extra", "classification", "all"],
         default="all",
         help="运行哪个任务",
     )
@@ -232,6 +274,7 @@ def main():
     parser.add_argument("--batch-size", type=int, default=8, help="并发 batch 大小")
     parser.add_argument("--max-length", type=int, default=512, help="单序列最大 token 数")
     parser.add_argument("--layer", type=int, default=LAYER, help="提取 WKV state 的层")
+    parser.add_argument("--sts-subdir", type=str, default="sts", help="STS 数据子目录 (sts 或 sts_dedup)")
     args = parser.parse_args()
 
     print("=" * 60, flush=True)
@@ -257,6 +300,8 @@ def main():
         run_cluster(model, tokenizer, args)
     if args.task in ("cluster_full",):
         run_cluster_full(model, tokenizer, args)
+    if args.task in ("cluster_20ng_full",):
+        run_cluster_20ng_full(model, tokenizer, args)
     if args.task in ("sts", "all"):
         run_sts(model, tokenizer, args)
     if args.task in ("sts_extra", "all"):

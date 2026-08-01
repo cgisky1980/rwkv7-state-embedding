@@ -8,7 +8,7 @@
 4. MLP 分类：256 → 256 → num_classes，交叉熵损失
 
 数据集：golden_balanced.jsonl (任务难度 R0-R3 四类)
-评估：val_acc (15% stratified split)
+评估：test_acc (15% held-out test, dev 用于 head 选择和 early stopping)
 
 特征提取:
     run_with_msvc.bat extract_features.py --task classification
@@ -67,7 +67,8 @@ class MlpClassifier(nn.Module):
         return self.net(x)
 
 
-def train_classifier(X_train, y_train, X_val, y_val, input_dim=256, n_epochs=30, batch_size=256, lr=1e-3, device="cpu"):
+def train_classifier(X_train, y_train, X_dev, y_dev, X_test, y_test, input_dim=256, n_epochs=30, batch_size=256, lr=1e-3, device="cpu"):
+    """训练分类器: dev 选 best_state, test 最终评估 (held-out)"""
     torch.manual_seed(42)
     np.random.seed(42)
 
@@ -77,10 +78,12 @@ def train_classifier(X_train, y_train, X_val, y_val, input_dim=256, n_epochs=30,
 
     X_train_t = torch.from_numpy(X_train).float().to(device)
     y_train_t = torch.from_numpy(y_train).long().to(device)
-    X_val_t = torch.from_numpy(X_val).float().to(device)
-    y_val_t = torch.from_numpy(y_val).long().to(device)
+    X_dev_t = torch.from_numpy(X_dev).float().to(device)
+    y_dev_t = torch.from_numpy(y_dev).long().to(device)
+    X_test_t = torch.from_numpy(X_test).float().to(device)
+    y_test_t = torch.from_numpy(y_test).long().to(device)
 
-    best_val_acc = 0.0
+    best_dev_acc = 0.0
     best_state = None
     n_train = len(y_train)
 
@@ -99,18 +102,21 @@ def train_classifier(X_train, y_train, X_val, y_val, input_dim=256, n_epochs=30,
 
         model.eval()
         with torch.no_grad():
-            pred_val = model(X_val_t).argmax(dim=-1)
-            val_acc = (pred_val == y_val_t).float().mean().item()
-        if val_acc > best_val_acc:
-            best_val_acc = val_acc
+            pred_dev = model(X_dev_t).argmax(dim=-1)
+            dev_acc = (pred_dev == y_dev_t).float().mean().item()
+        if dev_acc > best_dev_acc:
+            best_dev_acc = dev_acc
             best_state = {k: v.clone() for k, v in model.state_dict().items()}
 
+    # 用 best_state (按 dev 选择) 在 test 上评估
     model.load_state_dict(best_state)
     model.eval()
     with torch.no_grad():
         pred_train = model(X_train_t).argmax(dim=-1)
         train_acc = (pred_train == y_train_t).float().mean().item()
-    return best_val_acc, train_acc
+        pred_test = model(X_test_t).argmax(dim=-1)
+        test_acc = (pred_test == y_test_t).float().mean().item()
+    return best_dev_acc, train_acc, test_acc
 
 
 def extract_head(states, head_idx, head_size=HEAD_SIZE):
@@ -150,64 +156,71 @@ def main():
         states, hiddens, labels = states[:n], hiddens[:n], labels[:n]
         print(f"  截取前 {n} 个样本", flush=True)
 
-    # 3. 划分 train/val
-    X_train_idx, X_val_idx = train_test_split(np.arange(len(labels)), test_size=0.15, random_state=42, stratify=labels)
-    states_train, states_val = states[X_train_idx], states[X_val_idx]
-    hiddens_train, hiddens_val = hiddens[X_train_idx], hiddens[X_val_idx]
-    labels_train, labels_val = labels[X_train_idx], labels[X_val_idx]
-    print(f"  划分: train={len(X_train_idx)}, val={len(X_val_idx)}", flush=True)
+    # 3. 划分 train/dev/test (70/15/15, stratified)
+    #    dev: head 选择 + early stopping
+    #    test: 最终评估 (held-out, 不参与任何选择)
+    X_train_idx, X_temp_idx = train_test_split(np.arange(len(labels)), test_size=0.30, random_state=42, stratify=labels)
+    X_dev_idx, X_test_idx = train_test_split(X_temp_idx, test_size=0.50, random_state=42, stratify=labels[X_temp_idx])
+    states_train, states_dev, states_test = states[X_train_idx], states[X_dev_idx], states[X_test_idx]
+    hiddens_train, hiddens_dev, hiddens_test = hiddens[X_train_idx], hiddens[X_dev_idx], hiddens[X_test_idx]
+    labels_train, labels_dev, labels_test = labels[X_train_idx], labels[X_dev_idx], labels[X_test_idx]
+    print(f"  划分: train={len(X_train_idx)}, dev={len(X_dev_idx)} (head选择+early stopping), test={len(X_test_idx)} (最终评估)", flush=True)
 
-    # 4. Hidden baseline
+    # 4. Hidden baseline (dev 选 best_state, test 最终评估)
     print(f"\n-- Hidden baseline --", flush=True)
     mean = hiddens_train.mean(axis=0, keepdims=True)
     std = hiddens_train.std(axis=0, keepdims=True) + 1e-6
     h_train = (hiddens_train - mean) / std
-    h_val = (hiddens_val - mean) / std
-    val_acc_h, train_acc_h = train_classifier(h_train, labels_train, h_val, labels_val, input_dim=h_train.shape[1], n_epochs=args.n_epochs, device=args.device)
-    print(f"  Hidden MLP: train={train_acc_h:.4f} val={val_acc_h:.4f}", flush=True)
+    h_dev = (hiddens_dev - mean) / std
+    h_test = (hiddens_test - mean) / std
+    dev_acc_h, train_acc_h, test_acc_h = train_classifier(h_train, labels_train, h_dev, labels_dev, h_test, labels_test, input_dim=h_train.shape[1], n_epochs=args.n_epochs, device=args.device)
+    print(f"  Hidden MLP: train={train_acc_h:.4f} dev={dev_acc_h:.4f} test={test_acc_h:.4f}", flush=True)
 
-    # 5. Head 筛选
-    print(f"\n-- 每个 head 的分类准确率 --", flush=True)
+    # 5. Head 筛选 (只用 dev 排序, 不接触 test)
+    print(f"\n-- 每个 head 的分类准确率 (用 dev 排序) --", flush=True)
     head_accs = []
     for h in range(NUM_HEADS):
         X_h_train = extract_head(states_train, h)
-        X_h_val = extract_head(states_val, h)
+        X_h_dev = extract_head(states_dev, h)
         pca = PCA(n_components=min(64, X_h_train.shape[0], X_h_train.shape[1]), random_state=42)
         X_h_train_pca = pca.fit_transform(X_h_train)
-        X_h_val_pca = pca.transform(X_h_val)
+        X_h_dev_pca = pca.transform(X_h_dev)
         m = X_h_train_pca.mean(axis=0, keepdims=True)
         s = X_h_train_pca.std(axis=0, keepdims=True) + 1e-6
         X_h_train_pca = (X_h_train_pca - m) / s
-        X_h_val_pca = (X_h_val_pca - m) / s
-        val_acc, _ = train_classifier(X_h_train_pca, labels_train, X_h_val_pca, labels_val, input_dim=X_h_train_pca.shape[1], n_epochs=10, device=args.device)
-        head_accs.append((h, val_acc))
-        print(f"  H{h:2d}: val_acc={val_acc:.4f}", flush=True)
+        X_h_dev_pca = (X_h_dev_pca - m) / s
+        dev_acc, _, _ = train_classifier(X_h_train_pca, labels_train, X_h_dev_pca, labels_dev, X_h_dev_pca, labels_dev, input_dim=X_h_train_pca.shape[1], n_epochs=10, device=args.device)
+        head_accs.append((h, dev_acc))
+        print(f"  H{h:2d}: dev_acc={dev_acc:.4f}", flush=True)
 
     head_accs.sort(key=lambda x: x[1], reverse=True)
     top_heads = [h for h, _ in head_accs[: args.top_k]]
-    print(f"\n  Top-{args.top_k} head: {top_heads}", flush=True)
+    print(f"\n  Top-{args.top_k} head (按 dev 选择): {top_heads}", flush=True)
 
-    # 6. Top-K head + PCA + MLP
+    # 6. Top-K head + PCA + MLP (dev 选 best_state, test 最终评估)
     print(f"\n-- Top-{args.top_k} head + PCA{args.pca_dim} + MLP --", flush=True)
     X_train_raw = extract_multi_head(states_train, top_heads)
-    X_val_raw = extract_multi_head(states_val, top_heads)
+    X_dev_raw = extract_multi_head(states_dev, top_heads)
+    X_test_raw = extract_multi_head(states_test, top_heads)
     pca = PCA(n_components=args.pca_dim, random_state=42)
     X_train_pca = pca.fit_transform(X_train_raw)
-    X_val_pca = pca.transform(X_val_raw)
+    X_dev_pca = pca.transform(X_dev_raw)
+    X_test_pca = pca.transform(X_test_raw)
     mean = X_train_pca.mean(axis=0, keepdims=True)
     std = X_train_pca.std(axis=0, keepdims=True) + 1e-6
     X_train_pca = (X_train_pca - mean) / std
-    X_val_pca = (X_val_pca - mean) / std
+    X_dev_pca = (X_dev_pca - mean) / std
+    X_test_pca = (X_test_pca - mean) / std
 
     t0 = time.time()
-    val_acc, train_acc = train_classifier(X_train_pca, labels_train, X_val_pca, labels_val, input_dim=args.pca_dim, n_epochs=args.n_epochs, device=args.device)
-    print(f"  train={train_acc:.4f} val={val_acc:.4f} ({time.time()-t0:.1f}s)", flush=True)
+    dev_acc, train_acc, test_acc = train_classifier(X_train_pca, labels_train, X_dev_pca, labels_dev, X_test_pca, labels_test, input_dim=args.pca_dim, n_epochs=args.n_epochs, device=args.device)
+    print(f"  train={train_acc:.4f} dev={dev_acc:.4f} test={test_acc:.4f} ({time.time()-t0:.1f}s)", flush=True)
 
     # 7. 结论
     print(f"\n{'='*60}", flush=True)
     print(f"结论:", flush=True)
-    print(f"  Hidden MLP:               val_acc = {val_acc_h:.4f}", flush=True)
-    print(f"  Top-{args.top_k} head + PCA + MLP: val_acc = {val_acc:.4f}", flush=True)
+    print(f"  Hidden MLP:               dev={dev_acc_h:.4f} test={test_acc_h:.4f}", flush=True)
+    print(f"  Top-{args.top_k} head + PCA + MLP: dev={dev_acc:.4f} test={test_acc:.4f}", flush=True)
     print(f"{'='*60}", flush=True)
 
 

@@ -8,20 +8,26 @@ This repository systematically explores how to extract semantic embeddings from 
 
 | Task | Method | Metric | Comparison |
 |------|--------|--------|------------|
-| **Semantic Similarity** | Supervised Projection (48.1k pairs) + AnglE + 5-seed | Spearman=**0.8504** | Comparable to supervised bge-large-en-v1.5 (~0.85) and all-MiniLM-L6-v2 (~0.86) |
-| **Topic Clustering (supervised)** | Supervised Contrastive Projection + KMeans | v_measure=**0.8466** | Unsupervised baseline 0.29, 30+ unsupervised methods best 0.33 |
-| **Task Classification** | Hidden + MLP | val_acc=**0.9392** | - |
+| **Semantic Similarity** | Supervised Projection (46.9k pairs, deduplicated) + AnglE + 5-seed | Spearman=**0.7992** | Below bge-large ~0.85 (335M) and all-MiniLM-L6-v2 ~0.86 (22M); 0.86M projector params |
+| **Topic Clustering (supervised)** | Supervised Contrastive Projection (sklearn full-text, held-out test) | v_measure=**0.6221 ± 0.0021** | vs unsupervised baseline 0.4506 (+38%); MTEB short-text unsupervised cap 0.33 |
+| **Task Classification** | Hidden + MLP (independent test set) | test_acc=**0.9325** | dev_acc=0.9381, head selection on dev only |
 
 ## Key Insight
 
-**Albatross hidden state contains semantic information (supervised classification reaches 0.94), but unsupervised methods cannot extract it (STS 0.46, clustering 0.29); supervised projectors are needed to unlock its potential.**
+**Albatross hidden state contains semantic information (supervised classification reaches 0.93), but unsupervised methods cannot extract it (STS 0.46, clustering 0.45 on sklearn full-text / 0.33 on MTEB short-text); supervised projectors are needed to unlock its potential.**
 
 | Task | Unsupervised | Supervised Projection | Improvement |
 |------|--------------|----------------------|-------------|
-| STS | 0.46 | 0.85 | +85% |
-| Clustering | 0.29 | 0.85 | +193% |
+| STS | 0.46 | 0.7992 | +74% |
+| Clustering (sklearn full-text) | 0.4506 | 0.6221 | +38% |
 
 **Task-specific projectors cannot be mixed**: STS learns similarity ranking, clustering learns class separation—objectives differ (STS projection transfer to clustering fails: 0.14 < 0.34 baseline).
+
+## Strict Experimental Paradigm
+
+- **STS**: Training data deduplicated against STS-B dev/test (removed 1249 overlapping pairs, single-sentence level)
+- **Clustering**: sklearn full-text 20NG (removed headers/footers/quotes), text hash dedup (0.43% cross-post), stratified 70/15/15 split, train trains projector / dev selects best_state / test held-out
+- **Classification**: Independent test set (15%), head selection only on dev
 
 ## Directory Structure
 
@@ -38,11 +44,17 @@ paper/
 └── scripts/
     ├── 00_setup.py                   # environment setup (download model + copy source)
     ├── extract_features.py           # batched concurrent feature extraction (albatross)
-    ├── 01_clustering.py              # Task 1: clustering (unsupervised baseline)
-    ├── 02_sts_similarity.py          # Task 2: STS (48.1k training, supervised projection)
-    ├── 03_classification.py          # Task 3: classification (Hidden+MLP)
+    ├── 01_clustering.py              # Task 1: clustering (unsupervised baseline, MTEB short-text)
+    ├── 01b_clustering_unsupervised.py # Task 1b: unsupervised clustering (10 seeds KMeans)
+    ├── 02_sts_similarity.py          # Task 2: STS (46.9k deduplicated training, supervised projection)
+    ├── 03_classification.py          # Task 3: classification (Hidden+MLP, independent test set)
     ├── 04_cluster_with_projection.py # STS projection transfer to clustering (failed experiment)
-    ├── 05_cluster_supervised_projection.py  # Clustering (supervised contrastive projection)
+    ├── 05_cluster_supervised_projection.py  # Clustering (supervised, MTEB short-text version)
+    ├── 06_cluster_20ng_full.py       # Task 6: Clustering (sklearn full-text, strict dedup+split)
+    ├── dedup_sts_train.py            # STS training data deduplication script
+    ├── split_20ng_full.py            # 20NG sklearn full-text dedup + split script
+    ├── diagnose_sts_overlap.py       # STS train/test overlap diagnosis
+    ├── download_ag_news.py           # AG News download (unused)
     ├── run_with_msvc.bat             # Windows MSVC environment activation
     └── lib/
         ├── albatross_wrapper.py      # albatross wrapper (with batch concurrent extraction)
@@ -142,33 +154,33 @@ uv run --project ../../scripts python 04_cluster_with_projection.py
 
 ## Expected Output
 
-### Task 2: Semantic Similarity
+### Task 2: Semantic Similarity (deduplicated training data)
 ```
 Conclusion:
   Unsupervised Hidden cosine:  Spearman = 0.4600
-  Single model mean:           Spearman = 0.8166
-  5-seed ensemble:             Spearman = 0.8504
+  5-seed ensemble (dedup):     Spearman = 0.7992
 ```
 
-### Task 5: Topic Clustering
+### Task 6: Topic Clustering (sklearn full-text, held-out test)
 ```
 Conclusion:
-  Baseline (Hidden + standardize):    v_measure = 0.2912
-  Projection + KMeans (direct):       v_measure = 0.8388
-  Projection + standardize + KMeans:  v_measure = 0.8466
-  Projection + PCA(64) + KMeans:      v_measure = 0.8450
+  Baseline (Hidden + standardize, 10 seeds):    v_measure = 0.4506 ± 0.0081
+  Projection + KMeans (supervised, 10 seeds):   v_measure = 0.6221 ± 0.0021
+  Projection + standardize + KMeans:            v_measure = 0.6229 ± 0.0018
+  Projection + PCA(64) + KMeans:                  v_measure = 0.6212 ± 0.0013
 ```
 
-### Task 3: Task Classification
+### Task 3: Task Classification (independent test set)
 ```
 Result:
-  val_acc = 0.9392
+  Hidden + MLP:        dev_acc = 0.9381  test_acc = 0.9325
+  Top-8 head + PCA:    dev_acc = 0.9247  test_acc = 0.9208
 ```
 
 ## Key Design Decisions
 
 ### 1. Why Supervised Projection (not Unsupervised)
-Albatross hidden state exhibits severe anisotropy (unsupervised STS only 0.46), but supervised MLP classification reaches 0.94, proving the features contain information. Supervised projectors (MLP + AnglE Loss) map hidden to a linearly separable semantic space.
+Albatross hidden state exhibits severe anisotropy (unsupervised STS only 0.46), but supervised MLP classification reaches 0.93, proving the features contain information. Supervised projectors (MLP + AnglE Loss) map hidden to a linearly separable semantic space.
 
 ### 2. Why STS and Clustering Need Different Projectors
 - **STS**: learns similarity ranking (relative distance), L2 normalize compresses inter-class distance
@@ -189,13 +201,25 @@ STS scaling from 5.7k to 48.1k (8x) yields +47% improvement, indicating albatros
 | Method | Result | Failure Reason |
 |--------|--------|----------------|
 | STS projection transfer to clustering | 0.14 | STS learns ranking, clustering needs separation |
-| Unsupervised KMeans | 0.29 | Hidden anisotropy severe, unsupervised cannot extract |
-| Unsupervised Hidden cosine (STS) | 0.46 | Anisotropy causes 0.46 << 0.85 |
+| Unsupervised KMeans (MTEB short-text) | 0.29 | Hidden anisotropy severe, unsupervised cannot extract |
+| Unsupervised KMeans (sklearn full-text) | 0.45 | Better than short-text but still limited |
+| Unsupervised Hidden cosine (STS) | 0.46 | Anisotropy causes 0.46 << 0.80 |
 | UMAP nonlinear dim. reduction | 0.33 | Nonlinear reduction also ineffective |
 | DeepCluster self-supervised iter. | 0.30 | Pseudo-label quality too low |
 | Multi-layer hidden concatenation | 0.26 | Shallow-layer noise dilutes deep semantics |
 | Pure WKV state (albatross, Q-Readout) | 0.11 | State value range small, std=0.13 |
 | WKV state aggregation stats | 0.10 | row_sum/diag/trace have no clustering info |
+| AG News transfer to 20NG (abandoned) | - | Different class granularity (4 vs 20), STS transfer already failed |
+
+## Honest Disclosure
+
+Early versions reported STS 0.8504 and clustering 0.8466, which were **inflated by data leakage**:
+- **STS**: Training data (STS12-16) had 303 pair-level overlaps + 1020 sentence-level overlaps with STS-B test
+- **Clustering**: Projector trained on 20NG labels then evaluated on the same 20NG (supervised clustering, not unsupervised)
+
+This version fixes both issues:
+- **STS**: Strict deduplication (removed 1249 leak pairs, single-sentence level) → 0.7992
+- **Clustering**: sklearn full-text 20NG, strict dedup + 70/15/15 split, held-out test → 0.6221
 
 ## Citation
 

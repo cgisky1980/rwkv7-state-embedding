@@ -186,12 +186,13 @@ def main():
     print("任务二: 语义相似度 - Universal Sentence Embedding", flush=True)
     print("=" * 60, flush=True)
 
-    # 1. 加载 STS-B dev/test (评估用)
+    # 1. 加载 STS-B dev/test (评估用) - 始终从原 data/sts 目录读取
+    sts_orig_dir = args.data_dir.parent / "sts" if args.data_dir.name != "sts" else args.data_dir
     splits = {}
     for split in ["dev", "test"]:
         cache_path = args.cache_dir / f"sts_pair_l{LAYER}_{split}.npz"
         states, hiddens = load_npz(cache_path)
-        records = read_jsonl(args.data_dir / f"sts_{split}.jsonl")
+        records = read_jsonl(sts_orig_dir / f"sts_{split}.jsonl")
         scores = np.array([r["score"] for r in records], dtype=np.float32)
         splits[split] = {"hiddens": hiddens, "scores": scores}
         print(f"  {split}: {len(scores)} pairs, hiddens {hiddens.shape}", flush=True)
