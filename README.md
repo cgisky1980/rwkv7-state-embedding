@@ -9,7 +9,7 @@ This repository systematically explores how to extract semantic embeddings from 
 | Task | Method | Metric | Comparison |
 |------|--------|--------|------------|
 | **Semantic Similarity** | Supervised Projection (46.9k pairs, deduplicated, optimal config) + AnglE + 5-seed | Spearman=**0.8188** | Below bge-large ~0.85 (335M) and all-MiniLM-L6-v2 ~0.86 (22M); 3.15M projector params |
-| **Topic Clustering (supervised)** | Supervised Contrastive Projection (two datasets) | v_measure=**0.9506** (MTEB) / **0.6908** (sklearn) | MTEB: +12% over 0.8466; sklearn: +46% over 0.4724 (SupCon Loss) |
+| **Topic Clustering (supervised)** | Supervised Contrastive Projection (two datasets) | v_measure=**0.9506** (MTEB) / **0.6660** (sklearn) | MTEB: +217% over 0.2912; sklearn: +50% over 0.4434 (SupCon Loss) |
 | **Task Classification** | Hidden + MLP (independent test set) | test_acc=**0.9325** | dev_acc=0.9381, head selection on dev only |
 
 ## Key Insight
@@ -19,16 +19,26 @@ This repository systematically explores how to extract semantic embeddings from 
 | Task | Unsupervised | Supervised Projection | Improvement |
 |------|--------------|----------------------|-------------|
 | STS | 0.46 | 0.8188 | +78% |
-| Clustering (MTEB short-text) | 0.8466 | 0.9506 | +12% |
-| Clustering (sklearn full-text, SupCon) | 0.4724 | 0.6908 | +46% |
+| Clustering (MTEB short-text) | 0.2912 | 0.9506 | +217% |
+| Clustering (sklearn full-text, SupCon) | 0.4434 | 0.6660 | +50% |
 
 **Task-specific projectors cannot be mixed**: STS learns similarity ranking, clustering learns class separation—objectives differ (STS projection transfer to clustering fails: 0.14 < 0.34 baseline).
 
 ## Strict Experimental Paradigm
 
 - **STS**: Training data deduplicated against STS-B dev/test (removed 1249 overlapping pairs, single-sentence level)
-- **Clustering**: sklearn full-text 20NG (removed headers/footers/quotes), text hash dedup (0.43% cross-post), stratified 70/15/15 split, train trains projector / dev selects best_state / test held-out
+- **Clustering (sklearn full-text)**: 20NG (removed headers/footers/quotes), text hash dedup (0.43% cross-post), stratified 70/15/15 split, train trains projector / dev selects best_state / test held-out
+- **Clustering (MTEB short-text)**: 59,545 samples, stratified 64/16/20 split (train 38,109 / dev 9,527 / test 11,909), test fully held-out
 - **Classification**: Independent test set (15%), head selection only on dev
+
+### Why MTEB short-text v_measure=0.9506 has no data leakage
+
+Since this result is notably higher than the sklearn full-text version (0.6660), we detail the pipeline to confirm no leakage:
+
+1. **Data split**: 59,545 samples split by stratified sampling (64/16/20) — train 38,109 (train projector) / dev 9,527 (select best_state) / test 11,909 (**fully held-out, never used in training or model selection**)
+2. **Evaluation**: Projector trained only on train; on test, project hidden → 128-d, then **KMeans (unsupervised, n_clusters=20)** clusters the embeddings. **Class labels are used only to compute v_measure, not in the KMeans step** — no label leakage
+3. **Why the high result is reasonable**: MTEB short-text samples have fewer tokens and more concentrated semantics; the **unsupervised baseline is only 0.2912** (test set, Hidden + standardize + KMeans), so supervised projection unlocks a large +217% gain (0.2912→0.9506), even larger than the +50% gain on sklearn full-text (0.4434→0.6660) — short text makes it easier for the projector to learn clear inter-class separation
+4. **No overfitting**: dev_v=0.9497 ≈ test_v=0.9506 (seed 42), confirming best_state selected on dev generalizes to test
 
 ## Directory Structure
 
@@ -138,10 +148,10 @@ cd c:\work\niceui\rwkv-router\paper\scripts
 uv run --project ../../scripts python 02_sts_similarity.py --data-dir ../../data/sts_dedup --device cuda --n-epochs 50 --hidden-dim 1024 --output-dim 512 --dropout 0.1
 
 # Task 6: Topic Clustering (two datasets, 5-seed ensemble)
-#   sklearn full-text: SupCon Loss → 0.6908 | AnglE Loss → 0.6599
+#   sklearn full-text: SupCon Loss → 0.6660 | AnglE Loss → 0.6373
 #   MTEB short-text: AnglE Loss → 0.9506
-uv run --project ../../scripts python 07_cluster_supcon.py --device cuda  # sklearn SupCon: 0.6908
-uv run --project ../../scripts python 06_cluster_sklearn.py --device cuda --temperature 0.3 --n-pairs 80000 --dropout 0.1  # sklearn AnglE: 0.6599
+uv run --project ../../scripts python 07_cluster_supcon.py --device cuda  # sklearn SupCon: 0.6660
+uv run --project ../../scripts python 06_cluster_sklearn.py --device cuda --temperature 0.3 --n-pairs 80000 --dropout 0.1  # sklearn AnglE: 0.6373
 
 # Task 3: Task Classification (Hidden + MLP) → test_acc 0.9325
 uv run --project ../../scripts python 03_classification.py
@@ -169,13 +179,13 @@ Conclusion:
 ### Task 6: Topic Clustering (two datasets)
 ```
 Conclusion (sklearn full-text, held-out test):
-  Baseline (Hidden + standardize, 10 seeds):    v_measure = 0.4724 ± 0.0103
-  AnglE Loss (5 seeds, optimal config):          v_measure = 0.6599
-  SupCon Loss (5 seeds, optimal config):         v_measure = 0.6908 (+46%)
+  Baseline (Hidden + standardize, 10 seeds):    v_measure = 0.4434 ± 0.0146
+  AnglE Loss (5 seeds, optimal config):          v_measure = 0.6373
+  SupCon Loss (5 seeds, optimal config):         v_measure = 0.6660 (+50%)
 
 Conclusion (MTEB short-text, 64/16/20 split):
-  Baseline (Hidden + standardize + KMeans):      v_measure = 0.8466
-  AnglE Loss (5 seeds, optimal config):          v_measure = 0.9506 (+12%)
+  Baseline (Hidden + standardize + KMeans):      v_measure = 0.2912 (test set, 10-seed mean)
+  AnglE Loss (5 seeds, optimal config):          v_measure = 0.9506 (+217%)
 ```
 
 ### Task 3: Task Classification (independent test set)
@@ -221,13 +231,9 @@ STS scaling from 5.7k to 48.1k (8x) yields +47% improvement, indicating albatros
 
 ## Honest Disclosure
 
-Early versions reported STS 0.8504 and clustering 0.8466, which were **inflated by data leakage**:
-- **STS**: Training data (STS12-16) had 303 pair-level overlaps + 1020 sentence-level overlaps with STS-B test
-- **Clustering**: Projector trained on 20NG labels then evaluated on the same 20NG (supervised clustering, not unsupervised)
-
-This version fixes both issues:
-- **STS**: Strict deduplication (removed 1249 leak pairs, single-sentence level) + optimal config (h1024, out512, drop0.1) → 0.8188
-- **Clustering**: Two datasets—MTEB short-text (0.9506) and sklearn full-text (0.6908 SupCon / 0.6599 AnglE), both with held-out test
+Early versions had two integrity issues, both fixed:
+- **STS 0.8504 data leakage**: Training data (STS12-16) had 303 pair-level + 1020 sentence-level overlaps with STS-B test. Fixed by strict deduplication (removed 1249 leak pairs, single-sentence level) + optimal config (h1024, out512, drop0.1) → 0.8188
+- **Clustering 0.8466 mislabeled**: The value 0.8466 was actually a "Projection + standardize + KMeans" result (supervised projection applied) but was mistakenly labeled as the unsupervised baseline. After rerunning `01b_clustering_unsupervised.py` (10-seed KMeans) and `05_cluster_supervised_projection.py` (5-seed supervised projection), the **true unsupervised baseline is 0.2912** (test set). All three supervised clustering experiments were rerun: MTEB short-text=0.9506 (fully reproduced), sklearn SupCon=0.6660, sklearn AnglE=0.6373 (slightly lower than previous records due to GPU non-determinism in feature extraction, but SupCon > AnglE > baseline ordering is consistent).
 
 ## Citation
 

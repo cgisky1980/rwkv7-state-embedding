@@ -2,7 +2,7 @@
 
 ## Abstract
 
-RWKV-7, as a modern linear RNN architecture, contains two levels of internal states: (1) **WKV state**—a recurrent memory matrix shaped `[num_heads, key_dim, value_dim]`, the core of the Delta Rule; (2) **Hidden state**—the output vector of each TMix layer. This paper finds that the hidden state extracted by albatross (BlinkDL's inference engine) contains rich semantic information but exhibits severe anisotropy, preventing unsupervised methods (KMeans, cosine similarity) from effectively mining it—achieving only v_measure=0.47 on 20 Newsgroups (sklearn full-text version) clustering and Spearman=0.46 on STS-B semantic similarity. As a comparison, we also tried various aggregation methods on WKV state (Q-Readout, row_sum, diag, etc.), yielding even worse clustering performance (best 0.11), indicating that hidden state is more suitable for semantic extraction than WKV state. This paper presents a key insight: **hidden state contains semantic information (supervised MLP classification achieves 0.93), but unsupervised methods cannot extract it; supervised data is needed to train task-specific projectors to unlock its semantic potential**. Based on this insight, all three tasks achieve the following results: **(1) Semantic Similarity**: trained an STS-specific projector using 46.9k labeled pairs from NLI/STS/SICK-R (strictly deduplicated, removing 1249 leak pairs overlapping with STS-B dev/test), achieving Spearman=0.8188; **(2) Topic Clustering**: Validated on two versions of 20 Newsgroups—MTEB short-text version (59,545 samples) supervised projection v_measure=0.9506 (+12% over unsupervised baseline 0.8466); sklearn full-text version (strict dedup + stratified 70/15/15 split) SupCon Loss v_measure=0.6908 (+46% over unsupervised baseline 0.4724); **(3) Task Classification**: achieved test_acc=0.9325 on an independent test set using Hidden+MLP. It should be emphasized that STS and clustering tasks use supervised projectors and are thus supervised methods; the comparison with unsupervised baselines is only to validate the claim that "hidden state requires supervised projection," not to claim superiority over unsupervised methods. All three tasks are based on the albatross inference engine (source code unmodified), a 0.4B RWKV-7 model, and CPU training (parameters ~3.15M), with all code open-source and reproducible.
+RWKV-7, as a modern linear RNN architecture, contains two levels of internal states: (1) **WKV state**—a recurrent memory matrix shaped `[num_heads, key_dim, value_dim]`, the core of the Delta Rule; (2) **Hidden state**—the output vector of each TMix layer. This paper finds that the hidden state extracted by albatross (BlinkDL's inference engine) contains rich semantic information but exhibits severe anisotropy, preventing unsupervised methods (KMeans, cosine similarity) from effectively mining it—achieving only v_measure=0.44 on 20 Newsgroups (sklearn full-text version) clustering and Spearman=0.46 on STS-B semantic similarity. As a comparison, we also tried various aggregation methods on WKV state (Q-Readout, row_sum, diag, etc.), yielding even worse clustering performance (best 0.11), indicating that hidden state is more suitable for semantic extraction than WKV state. This paper presents a key insight: **hidden state contains semantic information (supervised MLP classification achieves 0.93), but unsupervised methods cannot extract it; supervised data is needed to train task-specific projectors to unlock its semantic potential**. Based on this insight, all three tasks achieve the following results: **(1) Semantic Similarity**: trained an STS-specific projector using 46.9k labeled pairs from NLI/STS/SICK-R (strictly deduplicated, removing 1249 leak pairs overlapping with STS-B dev/test), achieving Spearman=0.8188; **(2) Topic Clustering**: Validated on two versions of 20 Newsgroups—MTEB short-text version (59,545 samples) supervised projection v_measure=0.9506 (+217% over unsupervised baseline 0.2912); sklearn full-text version (strict dedup + stratified 70/15/15 split) SupCon Loss v_measure=0.6660 (+50% over unsupervised baseline 0.4434); **(3) Task Classification**: achieved test_acc=0.9325 on an independent test set using Hidden+MLP. It should be emphasized that STS and clustering tasks use supervised projectors and are thus supervised methods; the comparison with unsupervised baselines is only to validate the claim that "hidden state requires supervised projection," not to claim superiority over unsupervised methods. All three tasks are based on the albatross inference engine (source code unmodified), a 0.4B RWKV-7 model, and CPU training (parameters ~3.15M), with all code open-source and reproducible.
 
 **Keywords**: RWKV-7, Albatross, Supervised Projection, Semantic Embedding, Anisotropy
 
@@ -36,7 +36,7 @@ The supervised MLP classification achieving 0.93 proves that hidden state does c
 1. **Key Insight**: The anisotropy of albatross hidden state can be mitigated through supervised projectors without modifying the inference engine
 2. **Task-Specific Projection**: STS learns similarity ranking (46.9k pairs, strictly deduplicated), clustering learns class separation (12.8k labeled samples, sklearn full-text version with strict deduplication + split)—the two objectives differ and cannot be mixed
 3. **Strict Experimental Paradigm**: STS training data is strictly deduplicated against STS-B dev/test (removing 1249 overlapping pairs); clustering uses sklearn full-text 20NG with strict deduplication + stratified 70/15/15 split, where train is for training / dev for best_state selection / test for held-out evaluation; classification adds an independent test set, with head selection using only dev
-4. **Three Tasks Results**: STS Spearman=0.8188; clustering validated on two datasets (MTEB short-text v=0.9506, sklearn full-text SupCon v=0.6908, +12%/+46% over unsupervised baselines respectively); classification test_acc=0.9325. Note that STS and clustering use supervised projectors and are thus supervised methods
+4. **Three Tasks Results**: STS Spearman=0.8188; clustering validated on two datasets (MTEB short-text v=0.9506, sklearn full-text SupCon v=0.6660, +217%/+50% over unsupervised baselines respectively); classification test_acc=0.9325. Note that STS and clustering use supervised projectors and are thus supervised methods
 5. **Systematic Unsupervised Comparison**: 7 categories and 30+ unsupervised methods (KMeans/PCA/UMAP/Whitening/DeepCluster) peak at only 0.33 on the MTEB short-text version, empirically confirming the limitation of unsupervised methods and supporting the necessity of supervised projection
 6. **Pure Python Implementation**: Based on albatross inference engine, bucketed by length for concurrency, 250 samples/s
 
@@ -216,24 +216,24 @@ This paper evaluates clustering on two complementary datasets:
 | Dataset | Samples | Unsupervised baseline | Supervised (AnglE) | **Supervised (SupCon)** |
 |---------|---------|----------------------|---------------------|-------------------------|
 | MTEB short-text | 59,545 | 0.2912 | 0.9506 | - |
-| **sklearn full-text** | 18,253 | 0.4724 | 0.6599 | **0.6908** |
+| **sklearn full-text** | 18,253 | 0.4434 ± 0.0146 | 0.6373 | **0.6660** |
 
 **sklearn full-text detailed results**:
 
 | Method | Training Type | Test v_measure |
 |--------|--------------|----------------|
-| Hidden + standardize + KMeans (baseline, 10 seeds) | Unsupervised | 0.4724 ± 0.0103 |
+| Hidden + standardize + KMeans (baseline, 10 seeds) | Unsupervised | 0.4434 ± 0.0146 |
 | STS projection transfer (failed) | Supervised (STS) | 0.1424 |
-| Supervised contrastive (AnglE Loss, τ=0.3, 80k pairs) | Supervised (Clustering) | 0.6599 |
-| **Supervised contrastive (SupCon Loss, τ=0.07, batch=320)** | **Supervised (Clustering)** | **0.6908** |
+| Supervised contrastive (AnglE Loss, τ=0.3, 80k pairs) | Supervised (Clustering) | 0.6373 |
+| **Supervised contrastive (SupCon Loss, τ=0.07, batch=320)** | **Supervised (Clustering)** | **0.6660** |
 
 | seed | dev_v | test_v | ensemble |
 |------|-------|--------|----------|
-| 42 | 0.6658 | 0.6581 | 0.6581 |
-| 123 | 0.6603 | 0.6518 | 0.6728 |
-| 456 | 0.6609 | 0.6527 | 0.6811 |
-| 789 | 0.6640 | 0.6586 | 0.6879 |
-| 1024 | 0.6623 | 0.6659 | **0.6908** |
+| 42 | 0.6351 | 0.6402 | 0.6402 |
+| 123 | 0.6374 | 0.6378 | 0.6528 |
+| 456 | 0.6281 | 0.6458 | 0.6614 |
+| 789 | 0.6338 | 0.6473 | 0.6647 |
+| 1024 | 0.6355 | 0.6418 | **0.6660** |
 
 **Configuration**: SupCon Loss, τ=0.07, batch=320 (PK sampler, 20 classes × 16), dropout=0.1, 30 epochs, 5-seed ensemble
 
@@ -241,17 +241,38 @@ This paper evaluates clustering on two complementary datasets:
 
 | Configuration | dev_v | test_v (5-seed ensemble) |
 |----------------|-------|---------------------------|
-| baseline (Hidden + standardize + KMeans) | - | 0.8466 |
-| AnglE (τ=0.3, 80k pairs, drop0.1) | 0.9305 | **0.9506** |
+| baseline (Hidden + standardize + KMeans, 10 seeds) | - | 0.2912 |
+| AnglE (τ=0.3, 80k pairs, drop0.1) | 0.9497 | **0.9506** |
 
-**Note**: sklearn full-text test set (2738 samples) is held-out, not used in training; MTEB short-text version uses 64/16/20 split. v_measure is the mean of 10 KMeans random_states.
+**Note**: sklearn full-text test set (2738 samples) is held-out, not used in training; MTEB short-text version uses 64/16/20 split. The unsupervised baseline is the mean of 10 KMeans random_states on the test set. MTEB short-text results are fully reproduced (baseline=0.2912, supervised=0.9506); sklearn full-text results are slightly lower due to GPU non-determinism in feature extraction (baseline=0.4434/AnglE=0.6373/SupCon=0.6660), but the relative ordering SupCon > AnglE > baseline is consistent.
 
 **Analysis of differences between datasets**:
-1. sklearn full-text supervised result (0.6908) is much lower than MTEB full (0.9506), due to insufficient training data (12k vs 38k) + harder long-text clustering
-2. But sklearn full-text unsupervised baseline (0.4724) is higher than MTEB full (0.2912), because removing headers/footers/quotes yields cleaner samples
-3. Both datasets validate the core thesis: supervised projection significantly outperforms unsupervised methods (+46% / +227%)
+1. sklearn full-text supervised result (0.6660) is much lower than MTEB full (0.9506), due to insufficient training data (12k vs 38k) + harder long-text clustering
+2. But sklearn full-text unsupervised baseline (0.4434) is higher than MTEB full (0.2912), because removing headers/footers/quotes yields cleaner samples
+3. Both datasets validate the core thesis: supervised projection significantly outperforms unsupervised methods (sklearn +50%, MTEB +217%)
 
-**Conclusion**: SupCon Loss (batch-based, same-class samples as positives) is more suitable for clustering than AnglE Loss (pair-based), improving +0.0309 on sklearn full-text. dev_v and test_v are close (e.g., seed 42: dev=0.6658, test=0.6581), indicating no overfitting. Note this result uses class labels and is not directly comparable to unsupervised MTEB benchmarks.
+**Why MTEB short-text v_measure=0.9506 has no data leakage**:
+
+Since this result is notably higher than the sklearn full-text version (0.6660), we detail the data split and evaluation pipeline here to confirm no leakage. **A common confusion must be clarified first**: an earlier version mistakenly labeled "Projection + standardize + KMeans = 0.8466" (a supervised-projection result) as the unsupervised baseline, creating the false impression that "the unsupervised baseline already reaches 0.8466." After rerunning `01b_clustering_unsupervised.py` (10-seed KMeans) and `05_cluster_supervised_projection.py` (5 seeds supervised projection), the **true unsupervised baseline of the MTEB short-text version is 0.2912** (Hidden + standardize + KMeans), consistent with the 0.2912 in §4.3.3. The 0.8466 is a supervised-projection result, not an unsupervised baseline.
+
+1. **Data Split (64/16/20 stratified split)**: The 59,545 samples are split via stratified sampling by class labels into:
+   - train: 38,109 samples (64%) — used only to train the projector
+   - dev: 9,527 samples (16%) — used only for best_state model selection
+   - test: 11,909 samples (20%) — **fully held-out, never used in training or model selection**
+
+2. **Evaluation Pipeline (unsupervised clustering + supervised metric)**:
+   - The projector is trained only on train; best_state is selected by v_measure on dev
+   - Final evaluation runs on test: project test hidden states to 128-d via the trained projector, then cluster with **KMeans (unsupervised, n_clusters=20)**
+   - **Class labels are used only to compute the v_measure metric, not in the KMeans clustering step**, so there is no label leakage
+
+3. **Why the high result is reasonable (supervised projection unlocks the semantic potential of hidden state)**:
+   - The MTEB short-text **unsupervised baseline is only 0.2912** (KMeans directly on hidden states), consistent with the 0.2912 in §4.3.3, indicating severe hidden-state anisotropy that unsupervised methods cannot extract clustering structure from
+   - Supervised projection lifts v_measure from 0.2912 to 0.9506 (**+217%**), an even larger gain than the +50% on the sklearn full-text version (0.4434→0.6660), indicating that supervised projection unlocks more semantic potential in the short-text scenario
+   - Short-text samples have fewer tokens and more concentrated semantics, making it easier for supervised projection to learn clear inter-class separation boundaries; long texts are affected by noise and multiple topics, leaving less room for supervised-projection gains
+
+4. **No-overfitting evidence**: dev_v=0.9497 is close to test_v=0.9506 (after 5-seed ensemble), indicating the best_state selected on dev performs equally well on test, with no dev→test overfitting
+
+**Conclusion**: SupCon Loss (batch-based, same-class samples as positives) is more suitable for clustering than AnglE Loss (pair-based), improving +0.0287 on sklearn full-text (0.6373→0.6660). dev_v and test_v are close (e.g., seed 42: dev=0.6351, test=0.6402), indicating no overfitting. Note this result uses class labels and is not directly comparable to unsupervised MTEB benchmarks.
 
 #### 4.3.3 Unsupervised Clustering Methods Comparison (MTEB Short-text Version)
 
@@ -276,7 +297,7 @@ To validate the claim that "unsupervised methods cannot extract clustering struc
 4. **DeepCluster pseudo-label degradation**: Initial KMeans pseudo-labels are only 0.30, and iteration cannot self-improve (0.30→0.30), proving pseudo-label quality is insufficient to drive MLP to learn effective projections
 5. **WKV state has no clustering info**: Various aggregation stats of state (row_sum, diag, trace, etc.) peak at only 0.10, indicating albatross's WKV state has too small value range (std=0.13); clustering info resides in hidden, not state
 
-**Root cause**: The 0.4B language model's optimization objective is next-token prediction, not clustering. The semantic information in hidden state requires nonlinear transformation (supervised projection MLP) to unlock—this is exactly the empirical evidence supporting the core claim of this paper. Unsupervised methods cap at 0.33 (MTEB short-text version) / 0.47 (sklearn full-text version) vs supervised projection 0.6908 (sklearn full-text, SupCon) / 0.9506 (MTEB full, AnglE), a 46% / 227% improvement.
+**Root cause**: The 0.4B language model's optimization objective is next-token prediction, not clustering. The semantic information in hidden state requires nonlinear transformation (supervised projection MLP) to unlock—this is exactly the empirical evidence supporting the core claim of this paper. Unsupervised methods cap at 0.33 (MTEB short-text version) / 0.44 (sklearn full-text version) vs supervised projection 0.6660 (sklearn full-text, SupCon) / 0.9506 (MTEB full, AnglE), a 50% / 227% improvement.
 
 #### 4.3.4 Classification Task
 
@@ -364,12 +385,12 @@ The optimal τ=0.50 for albatross path is much higher than Rust path's 0.1, root
 This paper proposes a supervised projection-based framework for RWKV-7 hidden state semantic embedding extraction, adopting a strict experimental paradigm (STS training data deduplication, clustering on sklearn full-text version with strict deduplication + stratified split, classification with an independent test set), achieving the following results on three standard tasks:
 
 - **Semantic Similarity (supervised)**: Spearman=0.8188 (after deduplication), lower than bge-large-en-v1.5 (~0.85, 335M) and all-MiniLM-L6-v2 (~0.86, 22M), but with only 3.15M projector parameters. The gap is mainly attributable to the representation capacity ceiling of the 0.4B language model
-- **Topic Clustering (supervised)**: Validated on two datasets—MTEB short-text v_measure=0.9506 (+12% over unsupervised baseline 0.8466); sklearn full-text SupCon Loss v_measure=0.6908 (+46% over unsupervised baseline 0.4724). SupCon improves +0.0309 over AnglE on sklearn version
+- **Topic Clustering (supervised)**: Validated on two datasets—MTEB short-text v_measure=0.9506 (+217% over unsupervised baseline 0.2912); sklearn full-text SupCon Loss v_measure=0.6660 (+50% over unsupervised baseline 0.4434). SupCon improves +0.0287 over AnglE on sklearn version
 - **Task Classification**: test_acc=0.9325 (independent test set, head selection uses only dev)
 
-Core insights: albatross hidden state contains semantic information but requires supervised projection to unlock; task-specific projectors cannot be mixed; data scale is the key bottleneck. WKV state shows much lower clustering performance than hidden state (0.11 vs 0.47), indicating hidden state is more suitable for semantic extraction. All methods are based on a 0.4B model, albatross inference engine (source code unmodified), CPU trainable with ~3.15M parameters, suitable for edge deployment.
+Core insights: albatross hidden state contains semantic information but requires supervised projection to unlock; task-specific projectors cannot be mixed; data scale is the key bottleneck. WKV state shows much lower clustering performance than hidden state (0.11 vs 0.44), indicating hidden state is more suitable for semantic extraction. All methods are based on a 0.4B model, albatross inference engine (source code unmodified), CPU trainable with ~3.15M parameters, suitable for edge deployment.
 
-**Honest Disclosure**: The early-version reported STS 0.8504 and clustering 0.8466 were inflated due to data leakage (STS training data overlapped with STS-B test by 1249 pairs; clustering was trained on 20NG labels and evaluated on the same set). This version has been strictly deduplicated and uses held-out evaluation, giving more honest results.
+**Honest Disclosure**: The early-version reported STS 0.8504 was inflated due to data leakage (STS training data overlapped with STS-B test by 1249 pairs); the clustering 0.8466 was actually a "Projection + standardize + KMeans" result that was mistakenly labeled as the unsupervised baseline. After rerunning `01b_clustering_unsupervised.py` (10 seeds) and `05_cluster_supervised_projection.py` (5 seeds), and reran all three supervised clustering experiments for verification, the true unsupervised baseline of the MTEB short-text version is 0.2912 (consistent with the 0.2912 in §4.3.3). This version has been strictly deduplicated, uses held-out evaluation, and corrects the baseline-labeling error, giving more honest results.
 
 ---
 
@@ -429,8 +450,8 @@ uv run --project ../../scripts python 00_setup.py
 
 # 3. Run three tasks
 uv run --project ../../scripts python 02_sts_similarity.py --data-dir ../../data/sts_dedup --device cuda --n-epochs 50 --hidden-dim 1024 --output-dim 512 --dropout 0.1  # STS: 0.8188
-uv run --project ../../scripts python 07_cluster_supcon.py --device cuda  # Clustering: sklearn full-text: 0.6908 (SupCon)
-uv run --project ../../scripts python 06_cluster_sklearn.py --device cuda --temperature 0.3 --n-pairs 80000 --dropout 0.1  # Clustering: sklearn full-text: 0.6599 (AnglE)
+uv run --project ../../scripts python 07_cluster_supcon.py --device cuda  # Clustering: sklearn full-text: 0.6660 (SupCon)
+uv run --project ../../scripts python 06_cluster_sklearn.py --device cuda --temperature 0.3 --n-pairs 80000 --dropout 0.1  # Clustering: sklearn full-text: 0.6373 (AnglE)
 # MTEB short-text: 0.9506 (requires cluster_full feature extraction first, see 05_cluster_supervised_projection.py)
 uv run --project ../../scripts python 03_classification.py          # Classification: 0.9325
 ```
@@ -439,6 +460,6 @@ uv run --project ../../scripts python 03_classification.py          # Classifica
 
 ```
 STS:    5seed ensemble:  Spearman = 0.8188
-Clustering:    5seed ensemble:  v_measure = 0.6908 (sklearn SupCon) / 0.9506 (MTEB AnglE)
+Clustering:    5seed ensemble:  v_measure = 0.6660 (sklearn SupCon) / 0.9506 (MTEB AnglE)
 Classification:    test_acc = 0.9325
 ```

@@ -141,12 +141,12 @@ def make_supervised_pairs(hiddens, labels, n_pairs=None, seed=42):
 
 
 def train_one(seed, train_hiddens, train_labels, dev_hiddens, dev_labels,
-              temperature=0.5, n_epochs=30, device="cpu", n_pairs_per_epoch=20000):
+              temperature=0.5, n_epochs=30, device="cpu", n_pairs_per_epoch=20000, dropout=0.2):
     torch.manual_seed(seed)
     np.random.seed(seed)
 
     input_dim = train_hiddens.shape[1]
-    model = MlpProj(input_dim=input_dim, hidden_dim=512, output_dim=128, dropout=0.2).to(device)
+    model = MlpProj(input_dim=input_dim, hidden_dim=512, output_dim=128, dropout=dropout).to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3, weight_decay=1e-3)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=n_epochs)
 
@@ -195,6 +195,8 @@ def main():
     parser = argparse.ArgumentParser(description="任务五: 监督对比学习聚类")
     parser.add_argument("--cache-dir", type=Path, default=Path("../cache_python"))
     parser.add_argument("--temperature", type=float, default=0.5)
+    parser.add_argument("--dropout", type=float, default=0.2)
+    parser.add_argument("--n-pairs", type=int, default=20000)
     parser.add_argument("--n-epochs", type=int, default=30)
     parser.add_argument("--seeds", type=int, nargs="+", default=[42, 123, 456, 789, 1024])
     parser.add_argument("--device", type=str, default="cpu")
@@ -248,12 +250,12 @@ def main():
         print(f"\n  seed={seed}:", flush=True)
         model, best_dev_v = train_one(
             seed, train_hiddens, train_labels, dev_hiddens, dev_labels,
-            args.temperature, args.n_epochs, args.device
+            args.temperature, args.n_epochs, args.device, args.n_pairs, args.dropout
         )
         # test 评估
         model.eval()
         with torch.no_grad():
-            test_t = torch.from_numpy(test_hiddens).float()
+            test_t = torch.from_numpy(test_hiddens).float().to(args.device)
             test_emb = model(test_t).cpu().numpy()
         all_test_emb.append(test_emb)
         # 单 seed 评估
