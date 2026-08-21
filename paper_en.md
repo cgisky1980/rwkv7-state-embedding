@@ -2,9 +2,9 @@
 
 ## Abstract
 
-RWKV-7, as a modern linear RNN architecture, contains two levels of internal states: (1) **WKV state**—a recurrent memory matrix shaped `[num_heads, key_dim, value_dim]`, the core of the Delta Rule; (2) **Hidden state**—the output vector of each TMix layer. This paper finds that the hidden state extracted by albatross (BlinkDL's inference engine) contains rich semantic information but exhibits severe anisotropy, preventing unsupervised methods (KMeans, cosine similarity) from effectively mining it—achieving only v_measure=0.44 on 20 Newsgroups (sklearn full-text version) clustering and Spearman=0.46 on STS-B semantic similarity. As a comparison, we also tried various aggregation methods on WKV state (Q-Readout, row_sum, diag, etc.), yielding even worse clustering performance (best 0.11), indicating that hidden state is more suitable for semantic extraction than WKV state. This paper presents a key insight: **hidden state contains semantic information (supervised MLP classification achieves 0.93), but unsupervised methods cannot extract it; supervised data is needed to train task-specific projectors to unlock its semantic potential**. Based on this insight, all three tasks achieve the following results: **(1) Semantic Similarity**: trained an STS-specific projector using 46.9k labeled pairs from NLI/STS/SICK-R (strictly deduplicated, removing 1249 leak pairs overlapping with STS-B dev/test), achieving Spearman=0.8188; **(2) Topic Clustering**: Validated on two versions of 20 Newsgroups—MTEB short-text version (59,545 samples) supervised projection v_measure=0.9506 (+217% over unsupervised baseline 0.2912); sklearn full-text version (strict dedup + stratified 70/15/15 split) SupCon Loss v_measure=0.6660 (+50% over unsupervised baseline 0.4434); **(3) Task Classification**: achieved test_acc=0.9325 on an independent test set using Hidden+MLP. It should be emphasized that STS and clustering tasks use supervised projectors and are thus supervised methods; the comparison with unsupervised baselines is only to validate the claim that "hidden state requires supervised projection," not to claim superiority over unsupervised methods. All three tasks are based on the albatross inference engine (source code unmodified), a 0.4B RWKV-7 model, and CPU training (parameters ~3.15M), with all code open-source and reproducible.
+RWKV-7, as a modern linear RNN architecture, contains two levels of internal states: (1) **WKV state**—a recurrent memory matrix shaped `[num_heads, key_dim, value_dim]`, the core of the Delta Rule; (2) **Hidden state**—the output vector of each TMix layer. This paper finds that the hidden state extracted by albatross (BlinkDL's inference engine) contains rich semantic information but exhibits severe anisotropy, preventing unsupervised methods (KMeans, cosine similarity) from effectively mining it—achieving only v_measure=0.44 on 20 Newsgroups (sklearn full-text version) clustering and Spearman=0.46 on STS-B semantic similarity. As a comparison, we also tried various aggregation methods on WKV state (Q-Readout, row_sum, diag, etc.), yielding even worse clustering performance (best 0.11), indicating that hidden state is more suitable for semantic extraction than WKV state. This paper presents a key insight: **hidden state contains semantic information (supervised MLP classification achieves 0.93), but unsupervised methods cannot extract it; supervised data is needed to train task-specific projectors to unlock its semantic potential**. Based on this insight, all three tasks achieve the following results: **(1) Semantic Similarity**: trained an STS-specific projector using 46.9k labeled pairs from NLI/STS/SICK-R (strictly deduplicated, removing 1249 leak pairs overlapping with STS-B dev/test), achieving Spearman=0.8188; **(2) Topic Clustering**: Validated on two versions of 20 Newsgroups—MTEB short-text version (59,545 samples) supervised projection v_measure=0.9506 (+217% over unsupervised baseline 0.2912); sklearn full-text version (strict dedup + stratified 70/15/15 split) SupCon Loss v_measure=0.6660 (+50% over unsupervised baseline 0.4434); **(3) Task Classification**: achieved test_acc=0.9325 on an independent test set using Hidden+MLP. It should be emphasized that STS and clustering tasks use supervised projectors and are thus supervised methods; the comparison with unsupervised baselines is only to validate the claim that "hidden state requires supervised projection," not to claim superiority over unsupervised methods. Beyond offline benchmarks, the classification pipeline is deployed as the production smart router of an open-source desktop assistant: on a 2.9B int8 backbone with Chinese-language augmentation, held-out test accuracy reaches 0.960 (0.971 end-to-end through the deployed engine) at 77 ms mean latency, with zero runtime dependencies beyond the already-resident local model. All offline results are based on the albatross inference engine (source code unmodified), a 0.4B RWKV-7 model, and CPU training (parameters ~3.15M), with all code open-source and reproducible.
 
-**Keywords**: RWKV-7, Albatross, Supervised Projection, Semantic Embedding, Anisotropy
+**Keywords**: RWKV-7, Albatross, Supervised Projection, Semantic Embedding, Anisotropy, Agentic Model Routing
 
 ---
 
@@ -39,6 +39,7 @@ The supervised MLP classification achieving 0.93 proves that hidden state does c
 4. **Three Tasks Results**: STS Spearman=0.8188; clustering validated on two datasets (MTEB short-text v=0.9506, sklearn full-text SupCon v=0.6660, +217%/+50% over unsupervised baselines respectively); classification test_acc=0.9325. Note that STS and clustering use supervised projectors and are thus supervised methods
 5. **Systematic Unsupervised Comparison**: 7 categories and 30+ unsupervised methods (KMeans/PCA/UMAP/Whitening/DeepCluster) peak at only 0.33 on the MTEB short-text version, empirically confirming the limitation of unsupervised methods and supporting the necessity of supervised projection
 6. **Pure Python Implementation**: Based on albatross inference engine, bucketed by length for concurrency, 250 samples/s
+7. **Production Validation**: the classification head ships as the smart router of an open-source desktop assistant—on a 2.9B int8 backbone it reaches 0.960 test accuracy and 77 ms mean latency with zero extra runtime dependencies; two deployment findings (next-token logits of an untuned base model are unusable for tier classification; a language-distribution pitfall in training data causes a "Chinese → R0" shortcut) are documented for practitioners
 
 ---
 
@@ -60,6 +61,10 @@ RWKV [1] combines Transformer's parallel training with RNN's inference efficienc
 - **AnglE** [8]: Angle-based contrastive loss, mitigating embedding anisotropy
 - **SimCSE** [9]: Contrastive learning to alleviate anisotropy, but requires many negative samples
 - **Whitening** [10]: Linear transformation to eliminate anisotropy, but destroys nonlinear structure
+
+### 2.4 Agentic Model Routing
+
+SquillaRouter [15] routes each agent turn across four cost tiers (C0–C3) using 390 hand-crafted features with a LightGBM ranker and ONNX inference; its technical report shows 43–90% realized-cost reduction on agentic benchmarks while preserving task quality. Our production deployment (§5) adopts the same four-tier philosophy but replaces hand-crafted features and external runtimes with the native hidden state of the already-resident local model.
 
 ---
 
@@ -308,7 +313,7 @@ To validate the claim that "unsupervised methods cannot extract clustering struc
 
 **Strict Split (70/15/15)**: dev is used for head selection + early stopping, test is held-out for final evaluation. Head selection is ranked only on dev, never touching test.
 
-**Analysis**: Hidden + MLP outperforms Top-K head + PCA (test_acc 0.9325 > 0.9208), indicating that albatross hidden state already possesses good task separability—directly training a classifier on hidden is sufficient; Top-K head selection + PCA dimensionality reduction actually loses some information. dev_acc and test_acc are close (0.9381 vs 0.9325), indicating no overfitting. This is consistent with the core insight in §5.1—hidden state contains semantic information that can be extracted with a simple MLP (classification is a discriminative task that doesn't require projection to a semantic space). The Top-K head method is included as a comparison baseline.
+**Analysis**: Hidden + MLP outperforms Top-K head + PCA (test_acc 0.9325 > 0.9208), indicating that albatross hidden state already possesses good task separability—directly training a classifier on hidden is sufficient; Top-K head selection + PCA dimensionality reduction actually loses some information. dev_acc and test_acc are close (0.9381 vs 0.9325), indicating no overfitting. This is consistent with the core insight in §6.1—hidden state contains semantic information that can be extracted with a simple MLP (classification is a discriminative task that doesn't require projection to a semantic space). The Top-K head method is included as a comparison baseline.
 
 ### 4.4 Ablation Studies
 
@@ -355,13 +360,74 @@ This experiment uses a sampled subset of 2000 samples (100 per class), different
 
 ---
 
-## 5. Discussion
+## 5. Production Deployment: Agentic Model Routing
 
-### 5.1 Core Insight: Supervised Projection Unlocks Hidden Semantic Potential
+The classification pipeline of §3.5 ships as the smart router of **ai00-x**, an open-source AI assistant desktop client with a resident local RWKV engine. This section reports the design, two deployment findings we believe are independently useful (§5.2, §5.3), and production measurements on a 2.9B backbone.
+
+### 5.1 System Design
+
+Each conversational turn is routed across four complexity tiers, following the agentic-routing philosophy of SquillaRouter [15]:
+
+| Tier | Semantics | Default target |
+|------|-----------|----------------|
+| R0 | greetings, acknowledgments | local RWKV (zero API cost) |
+| R1 | simple single-step tasks | local RWKV |
+| R2 | code generation, multi-step reasoning | user-configured mid-tier model |
+| R3 | debugging, long-context, high-risk changes | user-configured primary model |
+
+The pipeline: a zero-cost rule short-circuit intercepts trivial acknowledgments; otherwise the request is classified by RWKV; a post-processing rule stack applies a safety upgrade (predicted R0/R1 but P(R2)+P(R3) > 0.45 → R2) and a sticky-tier rule within a session; the tier maps to a model; any failure (engine not ready, head missing, dimension mismatch, timeout) falls back to the primary model.
+
+The classifier runs **inside the already-resident inference engine**: tokenize (128-token truncation), prefill from a zero state on a dedicated slot isolated from the 16 generation slots, mean-pool the last-layer hidden state, and score it with the trained head. Unlike SquillaRouter [15]—390 hand-crafted features, a LightGBM/ONNX runtime, and a separate on-device embedding model—this design adds **zero runtime dependencies**: the head is a 0.66M-parameter matrix multiply (0.32 ms on CPU) over features of the model that must stay resident anyway for local generation.
+
+### 5.2 Next-Token Logits Fail; State Embeddings Work
+
+Before adopting state embeddings, we tested the seemingly simpler alternative: prompt the base model to answer with a tier label and read next-token logits. On the untuned 2.9B base model this fails categorically—a raw-prompt variant collapses to R0 (30% accuracy), a User:/Assistant:-wrapped variant collapses to R2 (28%). The next-token distribution of a small base model carries no trustworthy classification signal, while its hidden state yields 96%+ (§5.4). This mirrors the paper's core claim at the output layer: the information is in the state, not on the surface.
+
+### 5.3 A Language-Shortcut Pitfall
+
+golden_balanced contains 1,783 Chinese samples—all labeled R0. The first trained head duly learned a "Chinese → R0" shortcut: Chinese R1/R2/R3 requests collapsed to R0 with probability 1.00, while English traffic still scored ~96%. Purely English evaluation cannot detect this failure. We generated 857 Chinese R1/R2/R3 template-composed augmentation samples and merged them into the training split only (held-out sets untouched). After retraining, a hand-crafted Chinese-English mixed set rose from 45% to 100%, and the English-dominant held-out set from 96.2% to 97.1%—no regression. We flag this as a general data-audit item for tier classifiers trained on mixed-language traffic.
+
+### 5.4 Results at 2.9B
+
+Scaling the frozen backbone from 0.4B (hidden 1024) to a 2.9B int8-quantized model (hidden 2560), same head architecture and training protocol (70/15/15 stratified split; AdamW 1e-3, cosine schedule, 30 epochs, early stopping on dev):
+
+| Backbone | dev_acc | test_acc |
+|----------|---------|----------|
+| 0.4B fp16 (§4.3.4) | 0.9381 | 0.9325 |
+| 2.9B int8 + zh augmentation | 0.969 | **0.960** |
+
+The comparison jointly changes backbone scale and augmentation; the unaugmented 2.9B head already classifies English traffic at ~96% but collapses on Chinese R1–R3 (§5.3), so most of the gain is attributable to the backbone, with augmentation repairing the Chinese failure mode.
+
+End-to-end through the deployed engine: 97.1% on an independent 314-sample held-out set (per-class: R0 100% / R1 95% / R2 96% / R3 100%) and 100% on a 40-sample hand-crafted Chinese-English mixed set. The Python-trained weights and the Rust inference port agree exactly (max probability difference 0.000000).
+
+**Latency** (RTX 2080 Ti; full pipeline tokenize → zero-state prefill → mean-pool → head; 250 samples after warm-up): mean 77 ms, p50 79 ms, p95 81 ms; throughput 12.4 classifications/s. Latency is nearly insensitive to request length (16→128 tokens: +12%) because the sequence-path GEMM pads the token dimension to 256. Stage breakdown at 128 tokens: prefill 93.8%, zero-state restore 5.8%, head 0.4%. Since R0/R1 turns are answered by the same local model, ~80 ms is negligible against local generation (seconds) or a cloud first token (500 ms+), and the 3 s routing timeout is never approached.
+
+### 5.5 Deployment Notes
+
+- **Graceful degradation**: a missing, corrupted, or dimension-mismatched head (e.g., after the user swaps the local model) silently disables classification and traffic falls back to the primary model; the system runs with or without the router.
+- **Distribution**: the 14.2 MB head ships through the same content-addressed model manifest as the backbone (sha256-verified, mirrored to ModelScope/HuggingFace), adding ~14 MB to first-launch downloads.
+- **Engine prerequisites**: two inference-engine bugs had to be fixed before the latency above was reachable—a kernel-cache invalidation that recompiled CUDA kernels (~0.5 s) on every new sequence length, and a VRAM leak on variable-length prefills. Both affect any variable-length prefill workload, not only classification.
+
+### 5.6 Comparison with SquillaRouter
+
+| | SquillaRouter [15] | Ours (§5) |
+|---|---|---|
+| Features | 390 hand-crafted + external embeddings | native hidden state (2560-d), no feature engineering |
+| Classifier | LightGBM + ONNX | 0.66M-param MLP, pure Rust |
+| Extra runtime deps | LightGBM, ONNX, embedding model | none |
+| Headline result | cost −90% (PinchBench) / −43% (DRACO) vs fixed strong-model baseline | test_acc 0.960, 97.1% end-to-end, 77 ms mean |
+
+The two results are complementary rather than directly comparable: SquillaRouter reports cost-quality frontiers on agentic benchmarks; we report tier-classification accuracy and latency. The shared element is the four-tier philosophy; the engineering difference is that our router needs nothing beyond the local model the assistant already runs, with R0/R1 served at zero API cost. SquillaRouter's self-improving data flywheel—online capture of routing outcomes and periodic router retraining—remains future work for our deployment.
+
+---
+
+## 6. Discussion
+
+### 6.1 Core Insight: Supervised Projection Unlocks Hidden Semantic Potential
 
 The anisotropy of albatross hidden state (unsupervised STS only 0.46) is not a feature defect, but evidence that **unsupervised methods cannot extract nonlinear structure**. Supervised MLP classification achieving 0.94 proves the features contain information; only a supervised projector (MLP + AnglE Loss) is needed to map it to a linearly separable semantic space.
 
-### 5.2 Task-Specific Projectors Cannot Be Mixed
+### 6.2 Task-Specific Projectors Cannot Be Mixed
 
 | Task | Objective | Projector Behavior |
 |------|-----------|---------------------|
@@ -370,25 +436,26 @@ The anisotropy of albatross hidden state (unsupervised STS only 0.46) is not a f
 
 STS projector transfer to clustering fails (0.14 < 0.34 baseline), proving that **projectors must align with task objectives**.
 
-### 5.3 Data Scale is Key
+### 6.3 Data Scale is Key
 
 STS task expansion from 5.7k to 46.9k (8x) brings +39% improvement, indicating that albatross hidden's semantic information requires sufficient data to extract through supervised learning. This is consistent with SimCSE [9]'s finding: contrastive learning requires large amounts of samples.
 
-### 5.4 Albatross vs Rust (web-rwkv)
+### 6.4 Albatross vs Rust (web-rwkv)
 
 The optimal τ=0.50 for albatross path is much higher than Rust path's 0.1, rooted in hidden value range differences (albatross std=1.70 vs Rust std=3.54). This work abandons comparison with Rust, using albatross official implementation as the standard to avoid modifying the inference engine.
 
 ---
 
-## 6. Conclusion
+## 7. Conclusion
 
 This paper proposes a supervised projection-based framework for RWKV-7 hidden state semantic embedding extraction, adopting a strict experimental paradigm (STS training data deduplication, clustering on sklearn full-text version with strict deduplication + stratified split, classification with an independent test set), achieving the following results on three standard tasks:
 
 - **Semantic Similarity (supervised)**: Spearman=0.8188 (after deduplication), lower than bge-large-en-v1.5 (~0.85, 335M) and all-MiniLM-L6-v2 (~0.86, 22M), but with only 3.15M projector parameters. The gap is mainly attributable to the representation capacity ceiling of the 0.4B language model
 - **Topic Clustering (supervised)**: Validated on two datasets—MTEB short-text v_measure=0.9506 (+217% over unsupervised baseline 0.2912); sklearn full-text SupCon Loss v_measure=0.6660 (+50% over unsupervised baseline 0.4434). SupCon improves +0.0287 over AnglE on sklearn version
 - **Task Classification**: test_acc=0.9325 (independent test set, head selection uses only dev)
+- **Production Routing (§5)**: the same classification head, scaled to a 2.9B int8 backbone with Chinese augmentation and hardened by a rule stack, routes live traffic in a shipped desktop assistant—0.960 test accuracy, 97.1% end-to-end, 77 ms mean latency, zero extra runtime dependencies, R0/R1 served locally at zero API cost
 
-Core insights: albatross hidden state contains semantic information but requires supervised projection to unlock; task-specific projectors cannot be mixed; data scale is the key bottleneck. WKV state shows much lower clustering performance than hidden state (0.11 vs 0.44), indicating hidden state is more suitable for semantic extraction. All methods are based on a 0.4B model, albatross inference engine (source code unmodified), CPU trainable with ~3.15M parameters, suitable for edge deployment.
+Core insights: albatross hidden state contains semantic information but requires supervised projection to unlock; task-specific projectors cannot be mixed; data scale is the key bottleneck. WKV state shows much lower clustering performance than hidden state (0.11 vs 0.44), indicating hidden state is more suitable for semantic extraction. All offline methods are based on a 0.4B model, albatross inference engine (source code unmodified), CPU trainable with ~3.15M parameters, suitable for edge deployment; the production router (§5) additionally validates the classification pipeline on a 2.9B int8 backbone in live traffic.
 
 **Honest Disclosure**: The early-version reported STS 0.8504 was inflated due to data leakage (STS training data overlapped with STS-B test by 1249 pairs); the clustering 0.8466 was actually a "Projection + standardize + KMeans" result that was mistakenly labeled as the unsupervised baseline. After rerunning `01b_clustering_unsupervised.py` (10 seeds) and `05_cluster_supervised_projection.py` (5 seeds), and reran all three supervised clustering experiments for verification, the true unsupervised baseline of the MTEB short-text version is 0.2912 (consistent with the 0.2912 in §4.3.3). This version has been strictly deduplicated, uses held-out evaluation, and corrects the baseline-labeling error, giving more honest results.
 
@@ -423,6 +490,8 @@ Core insights: albatross hidden state contains semantic information but requires
 [13] Wang, W. et al. sentence-transformers/all-MiniLM-L6-v2. https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2
 
 [14] MTEB Leaderboard. https://huggingface.co/spaces/mteb/leaderboard
+
+[15] Liu, X. et al. Agentic Routing: The Harness-Native Data Flywheel. arXiv:2607.11399, 2026
 
 ---
 
@@ -463,3 +532,7 @@ STS:    5seed ensemble:  Spearman = 0.8188
 Clustering:    5seed ensemble:  v_measure = 0.6660 (sklearn SupCon) / 0.9506 (MTEB AnglE)
 Classification:    test_acc = 0.9325
 ```
+
+### Production Router (§5)
+
+Feature extraction for the 2.9B backbone runs through the deployed Rust engine (`extract_router_features.rs` in the rwkv-rsv repository); training and Chinese augmentation live in the ai00-x client repository (`scripts/router_head/`: `train_mlp.py`, `gen_zh_augment.py`), using the same protocol as above. Production measurements (77 ms mean latency, 12.4 classifications/s) are from the deployed desktop client on an RTX 2080 Ti.

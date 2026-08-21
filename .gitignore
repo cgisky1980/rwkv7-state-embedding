@@ -32,3 +32,12 @@ desktop.ini
 
 # 日志
 *.log
+
+# LaTeX 编译工具与本地缓存
+latex/tectonic.exe
+latex/*.aux
+latex/*.log
+latex/*.out
+
+# 大体积特征缓存 (30GB+, 可由脚本重新生成)
+scripts/saved/
