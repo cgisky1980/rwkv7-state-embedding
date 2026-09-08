@@ -48,6 +48,22 @@ torch.set_num_threads(os.cpu_count() or 4)
 LAYER = 12
 
 
+# ============================================================
+# 缓存加载 (含 scores)
+# ============================================================
+def load_npz_with_scores(path: Path):
+    """加载 .npz 缓存 float32。
+
+    sts_pair 缓存含 scores; states 为可选 (去泄露 clean 缓存仅存 hiddens+scores)。
+    """
+    path = Path(path)
+    with np.load(path) as data:
+        states = data["states"].astype(np.float32, copy=False) if "states" in data.files else None
+        hiddens = data["hiddens"].astype(np.float32, copy=False)
+        scores = data["scores"].astype(np.float32, copy=False)
+    return states, hiddens, scores
+
+
 def read_jsonl(path: Path) -> list[dict]:
     with open(path, "r", encoding="utf-8") as f:
         return [json.loads(line) for line in f if line.strip()]
@@ -109,10 +125,18 @@ def train_one(seed, train_data, dev_data, test_data, temperature=0.5, n_epochs=5
     torch.manual_seed(seed)
     np.random.seed(seed)
 
-    # 一次性把所有数据移到 device (避免每 batch .to() 传输开销)
-    s1_train = train_data[0].to(device)
-    s2_train = train_data[1].to(device)
-    scores_train = train_data[2].to(device)
+    feature_dim = train_data[0].shape[1]
+    # 大特征 (如 state 49152 维) 一次性移 GPU 会爆显存, 故训练数据保持 CPU, 按 batch 移 GPU.
+    # dev/test 较小, 一次性移 GPU 以加速评估.
+    is_big_feature = feature_dim >= 8192
+    if is_big_feature:
+        s1_train = train_data[0]
+        s2_train = train_data[1]
+        scores_train = train_data[2]  # 留在 CPU, 用 CPU perm 索引后移 GPU
+    else:
+        s1_train = train_data[0].to(device)
+        s2_train = train_data[1].to(device)
+        scores_train = train_data[2].to(device)
     s1_dev = dev_data[0].to(device)
     s2_dev = dev_data[1].to(device)
     scores_dev_cpu = dev_data[2]
@@ -120,7 +144,7 @@ def train_one(seed, train_data, dev_data, test_data, temperature=0.5, n_epochs=5
     s2_test = test_data[1].to(device)
     scores_test_cpu = test_data[2]
 
-    model = MlpProj(input_dim=s1_train.shape[1], hidden_dim=hidden_dim, output_dim=output_dim, dropout=dropout).to(device)
+    model = MlpProj(input_dim=train_data[0].shape[1], hidden_dim=hidden_dim, output_dim=output_dim, dropout=dropout).to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3, weight_decay=1e-3)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=n_epochs)
 
@@ -129,16 +153,26 @@ def train_one(seed, train_data, dev_data, test_data, temperature=0.5, n_epochs=5
     n_train = len(scores_train)
     # GPU 用大 batch, CPU 用小 batch
     is_cuda = device != "cpu" and "cuda" in str(device)
-    batch_size = 4096 if is_cuda else 256
+    # 大特征 (49k 维) 前向单 batch 计算量大, 需用小 batch, 否则显存爆
+    batch_size = 256 if is_big_feature else (4096 if is_cuda else 256)
 
     for epoch in range(n_epochs):
         model.train()
-        perm = torch.randperm(n_train, device=device)
+        # 大特征数据在 CPU, 索引也要在 CPU
+        rand_device = "cpu" if is_big_feature else device
+        perm = torch.randperm(n_train, device=rand_device)
         for i in range(0, n_train, batch_size):
             idx = perm[i:i + batch_size]
-            emb1 = model(s1_train[idx])
-            emb2 = model(s2_train[idx])
-            loss = angle_loss(emb1, emb2, scores_train[idx], temperature)
+            if is_big_feature:
+                s1_t = s1_train[idx].to(device)
+                s2_t = s2_train[idx].to(device)
+            else:
+                s1_t = s1_train[idx]
+                s2_t = s2_train[idx]
+            sc_t = scores_train[idx].to(device)
+            emb1 = model(s1_t)
+            emb2 = model(s2_t)
+            loss = angle_loss(emb1, emb2, sc_t, temperature)
             optimizer.zero_grad()
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
@@ -194,34 +228,42 @@ def main():
     parser.add_argument("--output-dim", type=int, default=128)
     parser.add_argument("--dropout", type=float, default=0.2)
     parser.add_argument("--layer", type=int, default=LAYER, help="WKV state 提取层 (文件名层号)")
+    parser.add_argument("--feature", choices=["hidden", "state"], default="hidden",
+                        help="用于训练投影器的特征: hidden=最后一层 hidden state, state=WKV state")
+    parser.add_argument("--top-k-heads", type=int, default=0,
+                        help=">0 时启用 Top-K Head 选择 (仅 state 特征, paper §4.3.4 方法): "
+                             "逐 head 评估 dev Spearman → 选 Top-K head 拼接 → PCA 降维 → 投影器")
+    parser.add_argument("--pca-dim", type=int, default=256,
+                        help="Top-K head 拼接后的 PCA 降维维度")
+    parser.add_argument("--head-eval-epochs", type=int, default=10,
+                        help="逐 head 评估时小投影器的训练轮数")
     args = parser.parse_args()
 
     print("=" * 60, flush=True)
     print("任务二: 语义相似度 - Universal Sentence Embedding", flush=True)
     print("=" * 60, flush=True)
 
-    # 1. 加载 STS-B dev/test (评估用) - 始终从原 data/sts 目录读取
-    sts_orig_dir = args.data_dir.parent / "sts" if args.data_dir.name != "sts" else args.data_dir
+    # 1. 加载 STS-B dev/test (评估用) - scores 直接来自缓存
+    def pick_feature(states, hiddens):
+        return states if args.feature == "state" else hiddens
+
     splits = {}
     for split in ["dev", "test"]:
         cache_path = args.cache_dir / f"sts_pair_l{args.layer}_{split}.npz"
-        states, hiddens = load_npz(cache_path)
-        records = read_jsonl(sts_orig_dir / f"sts_{split}.jsonl")
-        scores = np.array([r["score"] for r in records], dtype=np.float32)
-        splits[split] = {"hiddens": hiddens, "scores": scores}
-        print(f"  {split}: {len(scores)} pairs, hiddens {hiddens.shape}", flush=True)
+        states, hiddens, scores = load_npz_with_scores(cache_path)
+        features = pick_feature(states, hiddens)
+        splits[split] = {"features": features, "scores": scores}
+        print(f"  {split}: {len(scores)} pairs, {args.feature} {features.shape}", flush=True)
 
     # 2. 加载训练数据
     # 训练集: sts_train (必有) + nli_train + extra_train + sickr (可选)
-    train_hiddens_list = []
+    train_feats_list = []
     train_scores_list = []
 
     # STS-B train
     cache_path = args.cache_dir / f"sts_pair_l{args.layer}_train.npz"
-    states, hiddens = load_npz(cache_path)
-    records = read_jsonl(args.data_dir / "sts_train.jsonl")
-    scores = np.array([r["score"] for r in records], dtype=np.float32)
-    train_hiddens_list.append(hiddens)
+    states, hiddens, scores = load_npz_with_scores(cache_path)
+    train_feats_list.append(pick_feature(states, hiddens))
     train_scores_list.append(scores)
     print(f"  train (STS-B): {len(scores)} pairs", flush=True)
 
@@ -233,37 +275,103 @@ def main():
             if not cache_path.exists():
                 print(f"  [skip] {name}: {cache_path} 不存在", flush=True)
                 continue
-            states, hiddens = load_npz(cache_path)
-            data_path = args.data_dir / f"{name}.jsonl"
-            records = read_jsonl(data_path)
-            scores = np.array([r["score"] for r in records], dtype=np.float32)
-            train_hiddens_list.append(hiddens)
+            states, hiddens, scores = load_npz_with_scores(cache_path)
+            train_feats_list.append(pick_feature(states, hiddens))
             train_scores_list.append(scores)
             print(f"  train ({name}): {len(scores)} pairs", flush=True)
 
     # 合并训练数据
-    train_hiddens = np.concatenate(train_hiddens_list, axis=0)
+    train_features = np.concatenate(train_feats_list, axis=0)
     train_scores = np.concatenate(train_scores_list, axis=0)
     print(f"\n  总训练数据: {len(train_scores)} pairs", flush=True)
 
+    # ========================================================
+    # Top-K Head 选择 (paper §4.3.4 方法, 仅 state 特征)
+    # 1. 逐 head 评估: 每 head 4096 维 → PCA64 → 小投影器 → dev Spearman
+    # 2. 选 Top-K head 拼接 → PCA pca_dim → 替换特征
+    # ========================================================
+    head_selection_state = None
+    if args.feature == "state" and args.top_k_heads > 0:
+        from sklearn.decomposition import PCA
+
+        HEAD_SIZE_SQ = 64 * 64
+        n_head = train_features.shape[1] // HEAD_SIZE_SQ
+        assert n_head * HEAD_SIZE_SQ == train_features.shape[1], "state 维度不是 64x64 head 的整数倍"
+        dev_feats_raw = splits["dev"]["features"]
+        test_feats_raw = splits["test"]["features"]
+
+        print(f"\n-- Top-{args.top_k_heads} Head 选择 (n_head={n_head}, 每 head {HEAD_SIZE_SQ} 维) --", flush=True)
+
+        def make_pairs_np(feats_arr, scores_arr):
+            s1 = feats_arr[0::2]
+            s2 = feats_arr[1::2]
+            return (
+                torch.from_numpy(np.ascontiguousarray(s1)).float(),
+                torch.from_numpy(np.ascontiguousarray(s2)).float(),
+                torch.from_numpy(np.ascontiguousarray(scores_arr)).float(),
+            )
+
+        # 1. 逐 head 评估 (dev Spearman 排序, head 选择只用 dev 不接触 test)
+        head_dev_scores = []
+        for h in range(n_head):
+            cols = slice(h * HEAD_SIZE_SQ, (h + 1) * HEAD_SIZE_SQ)
+            pca_h = PCA(n_components=64, random_state=42)
+            Xtr_h = pca_h.fit_transform(train_features[:, cols].astype(np.float32))
+            Xdv_h = pca_h.transform(dev_feats_raw[:, cols].astype(np.float32))
+            tr_pairs = make_pairs_np(Xtr_h, train_scores)
+            dv_pairs = make_pairs_np(Xdv_h, splits["dev"]["scores"])
+            dev_sp_h, _, _, _, _ = train_one(
+                42, tr_pairs, dv_pairs, dv_pairs, args.temperature,
+                args.head_eval_epochs, args.device,
+                hidden_dim=256, output_dim=128, dropout=args.dropout,
+            )
+            head_dev_scores.append((h, dev_sp_h))
+            print(f"  H{h:2d}: dev Spearman = {dev_sp_h:.4f}", flush=True)
+
+        head_dev_scores.sort(key=lambda x: x[1], reverse=True)
+        top_heads = [h for h, _ in head_dev_scores[: args.top_k_heads]]
+        print(f"  Top-{args.top_k_heads} heads (按 dev 选择): {top_heads}", flush=True)
+
+        # 2. Top-K 拼接 + PCA 降维 (PCA 在 train 句子行上 fit)
+        def select_heads(feats):
+            return np.concatenate(
+                [feats[:, h * HEAD_SIZE_SQ:(h + 1) * HEAD_SIZE_SQ] for h in top_heads], axis=1
+            )
+
+        print(f"  拼接 {args.top_k_heads} head → {args.top_k_heads * HEAD_SIZE_SQ} 维, PCA → {args.pca_dim} 维...", flush=True)
+        t0_pca = time.time()
+        pca = PCA(n_components=args.pca_dim, svd_solver="randomized", random_state=42)
+        train_features = pca.fit_transform(select_heads(train_features).astype(np.float32)).astype(np.float32)
+        splits["dev"]["features"] = pca.transform(select_heads(dev_feats_raw).astype(np.float32)).astype(np.float32)
+        splits["test"]["features"] = pca.transform(select_heads(test_feats_raw).astype(np.float32)).astype(np.float32)
+        print(f"  PCA 完成 ({time.time()-t0_pca:.1f}s), 特征维度: {train_features.shape[1]}", flush=True)
+
+        head_selection_state = {
+            "head_indices": top_heads,
+            "head_size": 64,
+            "pca_components": pca.components_.astype(np.float32),
+            "pca_mean": pca.mean_.astype(np.float32),
+            "head_dev_scores": head_dev_scores,
+        }
+
     # 3. 无监督 baseline
     print(f"\n-- 无监督 baseline --", flush=True)
-    unsup_sp = unsupervised_baseline(splits["test"]["hiddens"], splits["test"]["scores"])
-    print(f"  Hidden cosine: Spearman = {unsup_sp:.4f}", flush=True)
+    unsup_sp = unsupervised_baseline(splits["test"]["features"], splits["test"]["scores"])
+    print(f"  {args.feature} cosine: Spearman = {unsup_sp:.4f}", flush=True)
 
     # 4. 构造句子对 (交错: [s1_p0, s2_p0, s1_p1, ...])
-    def make_pairs(hiddens_arr, scores_arr):
-        s1 = hiddens_arr[0::2]
-        s2 = hiddens_arr[1::2]
+    def make_pairs(feats_arr, scores_arr):
+        s1 = feats_arr[0::2]
+        s2 = feats_arr[1::2]
         return (
             torch.from_numpy(np.ascontiguousarray(s1)).float(),
             torch.from_numpy(np.ascontiguousarray(s2)).float(),
             torch.from_numpy(np.ascontiguousarray(scores_arr)).float(),
         )
 
-    train_data = make_pairs(train_hiddens, train_scores)
-    dev_data = make_pairs(splits["dev"]["hiddens"], splits["dev"]["scores"])
-    test_data = make_pairs(splits["test"]["hiddens"], splits["test"]["scores"])
+    train_data = make_pairs(train_features, train_scores)
+    dev_data = make_pairs(splits["dev"]["features"], splits["dev"]["scores"])
+    test_data = make_pairs(splits["test"]["features"], splits["test"]["scores"])
     print(f"\n训练: {len(train_data[2])} pairs, 特征维度: {train_data[0].shape[1]}", flush=True)
 
     # 5. 训练 5 seed 集成
@@ -287,8 +395,13 @@ def main():
         print(f"  seed={seed} dev={dev_sp:.4f} test={test_sp:.4f} ens={ens_sp:.4f} ({time.time()-t0:.1f}s)", flush=True)
 
     # 保存 projection 模型 (供聚类等其他任务使用)
-    proj_save_path = args.cache_dir / f"universal_projection_l{args.layer}.pt"
-    torch.save({
+    if args.feature == "state":
+        proj_name = (f"universal_projection_state_topk{args.top_k_heads}_l{args.layer}.pt"
+                     if args.top_k_heads > 0 else f"universal_projection_state_l{args.layer}.pt")
+    else:
+        proj_name = f"universal_projection_l{args.layer}.pt"
+    proj_save_path = args.cache_dir / proj_name
+    save_dict = {
         "seeds": args.seeds,
         "state_dicts": saved_projections,
         "config": {
@@ -299,7 +412,12 @@ def main():
             "temperature": args.temperature,
             "train_pairs": len(train_data[2]),
         },
-    }, proj_save_path)
+    }
+    if head_selection_state is not None:
+        save_dict["head_selection"] = head_selection_state
+        save_dict["config"]["feature"] = "state_topk"
+        save_dict["config"]["top_k_heads"] = args.top_k_heads
+    torch.save(save_dict, proj_save_path)
     print(f"\n  保存 projection: {proj_save_path}", flush=True)
 
     # 6. 最终结果
