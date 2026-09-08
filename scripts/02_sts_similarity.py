@@ -73,24 +73,23 @@ def read_jsonl(path: Path) -> list[dict]:
 # 模型
 # ============================================================
 class MlpProj(nn.Module):
-    """2层 MLP 投影器: input → BatchNorm → Linear → GELU → LayerNorm → Dropout
-                      → Linear → GELU → LayerNorm → Dropout → Linear → L2 Norm
+    """MLP 投影器: input → BatchNorm → [Linear → GELU → LayerNorm → Dropout] × (n_layers-1)
+                      → Linear → L2 Norm
+    n_layers=2 为原版 (input→hidden→output); n_layers=3 加深一层 hidden。
     """
 
-    def __init__(self, input_dim: int = 1024, hidden_dim: int = 512, output_dim: int = 128, dropout: float = 0.2):
+    def __init__(self, input_dim: int = 1024, hidden_dim: int = 512, output_dim: int = 128,
+                 dropout: float = 0.2, n_layers: int = 2):
         super().__init__()
+        assert n_layers >= 2, "n_layers 至少 2 (input→hidden→output)"
         self.input_norm = nn.BatchNorm1d(input_dim)
-        self.net = nn.Sequential(
-            nn.Linear(input_dim, hidden_dim),
-            nn.GELU(),
-            nn.LayerNorm(hidden_dim),
-            nn.Dropout(dropout),
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.GELU(),
-            nn.LayerNorm(hidden_dim),
-            nn.Dropout(dropout),
-            nn.Linear(hidden_dim, output_dim),
-        )
+        blocks = [nn.Linear(input_dim, hidden_dim)]
+        for _ in range(n_layers - 2):
+            blocks += [nn.GELU(), nn.LayerNorm(hidden_dim), nn.Dropout(dropout),
+                       nn.Linear(hidden_dim, hidden_dim)]
+        blocks += [nn.GELU(), nn.LayerNorm(hidden_dim), nn.Dropout(dropout),
+                   nn.Linear(hidden_dim, output_dim)]
+        self.net = nn.Sequential(*blocks)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = self.input_norm(x)
@@ -121,7 +120,7 @@ def spearman_corr(x: np.ndarray, y: np.ndarray) -> float:
 # 训练
 # ============================================================
 def train_one(seed, train_data, dev_data, test_data, temperature=0.5, n_epochs=50, device="cpu",
-              hidden_dim=512, output_dim=128, dropout=0.2, init_state=None):
+              hidden_dim=512, output_dim=128, dropout=0.2, init_state=None, n_layers=2):
     torch.manual_seed(seed)
     np.random.seed(seed)
 
@@ -144,7 +143,8 @@ def train_one(seed, train_data, dev_data, test_data, temperature=0.5, n_epochs=5
     s2_test = test_data[1].to(device)
     scores_test_cpu = test_data[2]
 
-    model = MlpProj(input_dim=train_data[0].shape[1], hidden_dim=hidden_dim, output_dim=output_dim, dropout=dropout).to(device)
+    model = MlpProj(input_dim=train_data[0].shape[1], hidden_dim=hidden_dim,
+                    output_dim=output_dim, dropout=dropout, n_layers=n_layers).to(device)
     if init_state is not None:
         # 两阶段: 从预训练投影器 (如 07 InfoNCE) 初始化后微调
         model.load_state_dict(init_state)
@@ -236,6 +236,8 @@ def main():
     parser.add_argument("--hidden-dim", type=int, default=512)
     parser.add_argument("--output-dim", type=int, default=128)
     parser.add_argument("--dropout", type=float, default=0.2)
+    parser.add_argument("--proj-layers", type=int, default=2,
+                        help="投影器层数 (2=原版 input→hidden→output; 3=加深一层 hidden)")
     parser.add_argument("--layer", type=int, default=LAYER, help="WKV state 提取层 (文件名层号)")
     parser.add_argument("--feature", choices=["hidden", "state", "fusion"], default="hidden",
                         help="用于训练投影器的特征: hidden=最后一层 hidden state, state=WKV state, "
@@ -468,7 +470,7 @@ def main():
         dev_sp, test_sp, emb1_test, emb2_test, proj_state = train_one(
             seed, train_data, dev_data, test_data, args.temperature, args.n_epochs, args.device,
             hidden_dim=args.hidden_dim, output_dim=args.output_dim, dropout=args.dropout,
-            init_state=init_state,
+            init_state=init_state, n_layers=args.proj_layers,
         )
         all_emb_test.append((emb1_test, emb2_test))
         saved_projections.append(proj_state)
@@ -500,6 +502,7 @@ def main():
             "output_dim": args.output_dim,
             "dropout": args.dropout,
             "temperature": args.temperature,
+            "n_layers": args.proj_layers,
             "train_pairs": len(train_data[2]),
         },
     }

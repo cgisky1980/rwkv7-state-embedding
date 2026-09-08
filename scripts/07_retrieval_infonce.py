@@ -115,6 +115,8 @@ def main() -> None:
     parser.add_argument("--patience", type=int, default=3, help="早停: 连续 N 次评估无提升")
     parser.add_argument("--hidden-dim", type=int, default=1024)
     parser.add_argument("--output-dim", type=int, default=512)
+    parser.add_argument("--proj-layers", type=int, default=2,
+                        help="投影器层数 (2=原版; 3=加深一层 hidden)")
     parser.add_argument("--dropout", type=float, default=0.1)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--device", type=str, default="cuda")
@@ -189,7 +191,8 @@ def main() -> None:
     torch.manual_seed(args.seed)
     device = args.device
     model = MlpProj(input_dim=A.shape[1], hidden_dim=args.hidden_dim,
-                    output_dim=args.output_dim, dropout=args.dropout).to(device)
+                    output_dim=args.output_dim, dropout=args.dropout,
+                    n_layers=args.proj_layers).to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-3)
     total_steps = args.n_epochs * ((M + args.batch_size - 1) // args.batch_size)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=total_steps)
@@ -267,6 +270,7 @@ def main() -> None:
             "feature": args.feature,
             "hidden_dim": args.hidden_dim,
             "output_dim": args.output_dim,
+            "n_layers": args.proj_layers,
             "dropout": args.dropout,
             "temperature": args.temperature,
             "loss": "infonce_inbatch",

@@ -16,6 +16,7 @@ hidden 提取:
   - 最后一层 FFN 输出 (x + xx 后)
   - mean pooling: 对所有 token 取均值
 """
+import re
 import sys
 import time
 from pathlib import Path
@@ -59,6 +60,36 @@ def load_model(model_path: Path, vocab_path: Path):
     return model, tokenizer
 
 
+PROMPT_TEMPLATES = {
+    # PromptEOL (Jiang et al. 2023): 白皮书标准模板
+    "eol": 'This sentence: "{text}" means in one word:',
+    # Input/Output 指令风格模板
+    "io": "Input: {text}\n\nOutput:",
+    # RWKV 官方 QA 训练格式 (wiki.rwkv.com): User 下达总结任务(英文), 原文用代码围栏隔离
+    "qa": "User: Summarize the following sentence in one word.\n```\n{text}\n```\n\nAssistant:",
+    # RWKV 官方 Instruction 训练格式 (指令在前, Input 在后, 弱 recall 架构约束)
+    "ins": "Instruction: Summarize the following sentence in one word.\n\nInput: {text}\n\nResponse:",
+}
+
+
+def apply_prompt(texts: list, prompt_style: str) -> list:
+    """按模板包装文本; 空 style 原样返回。
+
+    RWKV 用 \n\n 分割对话轮次, 输入文本中的 \r\n 与连续换行必须先折叠为单个 \n,
+    否则文本内的 \n\n 会被模型当成对话边界 (与官方 ChatRWKV API_DEMO_WORLD.py
+    的预处理一致: re.sub(r"\n{2,}", "\n", q).replace("\r\n", "\n"))。
+    """
+    if not prompt_style:
+        return texts
+    tpl = PROMPT_TEMPLATES[prompt_style]
+    out = []
+    for t in texts:
+        t = t.replace("\r\n", "\n")
+        t = re.sub(r"\n{2,}", "\n", t)
+        out.append(tpl.format(text=t))
+    return out
+
+
 def extract_features(
     model,
     tokenizer,
@@ -67,6 +98,7 @@ def extract_features(
     max_length: int = 512,
     layer: int = 12,
     pad_token: int = 0,
+    prompt_style: str = "",
 ) -> Tuple[np.ndarray, np.ndarray]:
     """提取 WKV state + mean hidden state。
 
@@ -81,10 +113,12 @@ def extract_features(
         max_length: 最大 token 长度（截断）
         layer: 提取 WKV state 的层索引
         pad_token: 空 token id
+        prompt_style: "" (无模板, mean pooling) / "eol" / "io" (见 PROMPT_TEMPLATES);
+                      非空时 hidden 取最后 token (decoder-only LLM 嵌入标准做法)
 
     Returns:
         states: (N, H*N*N) float16 - WKV state（指定层）
-        hiddens: (N, C) float16 - mean pooling hidden state（最后一层 FFN 输出）
+        hiddens: (N, C) float16 - hidden state（mean pooling 或 last-token）
 
     Notes:
         - 单序列推理（forward_seq），无 padding 污染
@@ -93,6 +127,8 @@ def extract_features(
     """
     # 延迟 import: 模块级函数
     from rwkv7 import RWKV_x070_TMix_seq, RWKV_x070_CMix_seq
+
+    texts = apply_prompt(texts, prompt_style)
 
     n = len(texts)
     z = model.z
@@ -153,8 +189,11 @@ def extract_features(
             x = x + xx
 
         # x: (T, C) - 最后一层 FFN 输出
-        # hidden = mean pooling over tokens (与 Rust PostFfn hook 一致)
-        hidden = x.float().mean(dim=0).half()  # (C,)
+        # hidden: mean pooling (无模板) 或 last-token (prompt 模板)
+        if prompt_style:
+            hidden = x.float()[-1].half()  # (C,)
+        else:
+            hidden = x.float().mean(dim=0).half()  # (C,)
 
         # WKV state: state[1][layer] shape (H, N, N) for single sequence
         wkv = state[1][layer]  # (H, N, N) - half
@@ -181,8 +220,9 @@ def extract_features_batch(
     layer: int = 12,
     pad_token: int = 0,
     need_state: bool = True,
+    prompt_style: str = "",
 ) -> Tuple[np.ndarray | None, np.ndarray]:
-    """批量并发提取 WKV state + mean hidden state (按长度分桶, 无 padding 污染).
+    """批量并发提取 WKV state + hidden state (按长度分桶, 无 padding 污染).
 
     相比 extract_features (单序列), 本函数按 token 长度分桶后用 forward_seq_batch
     并发推理, 速度提升 5-10x. 每桶内序列长度相同, 无 padding, state/hidden 不被污染.
@@ -196,12 +236,17 @@ def extract_features_batch(
         layer: 提取 WKV state 的层索引
         pad_token: 空 token id
         need_state: False 时跳过 state (hidden-only 模式, 省内存/磁盘/拷贝)
+        prompt_style: "" (无模板, mean pooling) / "eol" / "io" (见 PROMPT_TEMPLATES);
+                      非空时 hidden 取最后 token
+                      (注意: 截断可能切掉模板后缀, 仅适用于短文本数据)
 
     Returns:
         states: (N, H*N*N) float16 - WKV state（指定层, 按原 texts 顺序）; need_state=False 时为 None
-        hiddens: (N, C) float16 - mean pooling hidden state（按原 texts 顺序）
+        hiddens: (N, C) float16 - hidden state（mean pooling 或 last-token, 按原 texts 顺序）
     """
     from rwkv7 import RWKV_x070_TMix_seq_batch, RWKV_x070_CMix_seq_batch
+
+    texts = apply_prompt(texts, prompt_style)
 
     n = len(texts)
     z = model.z
@@ -274,8 +319,11 @@ def extract_features_batch(
                 x = x + xx
 
             # x: (B, T, C) - 最后一层 FFN 输出
-            # hidden = mean pooling over tokens
-            hidden = x.float().mean(dim=1).half()  # (B, C)
+            # hidden: mean pooling (无模板) 或 last-token (prompt 模板)
+            if prompt_style:
+                hidden = x.float()[:, -1, :].half()  # (B, C)
+            else:
+                hidden = x.float().mean(dim=1).half()  # (B, C)
             # WKV state: state[1][layer] shape (B, H, N, N)
             wkv = state[1][layer] if need_state else None  # (B, H, N, N) - half
 

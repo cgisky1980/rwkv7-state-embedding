@@ -184,7 +184,8 @@ def run_sts(model, tokenizer, args) -> None:
             sentences.append(r["sentence2"])
 
         states, hiddens = extract_features_batch(
-            model, tokenizer, sentences, args.batch_size, args.max_length, layer=args.layer
+            model, tokenizer, sentences, args.batch_size, args.max_length,
+            layer=args.layer, prompt_style=getattr(args, "prompt_style", ""),
         )
 
         scores = np.array([r["score"] for r in records], dtype=np.float32)
@@ -228,6 +229,7 @@ def _extract_state_pca_chunked(model, tokenizer, sentences, args, transform, n_e
         states, hiddens = extract_features_batch(
             model, tokenizer, chunk, args.batch_size, args.max_length,
             layer=args.layer, need_state=True,
+            prompt_style=getattr(args, "prompt_style", ""),
         )
         x = states[:, cols].astype(np.float32)
         x = (x - mean) @ comps.T
@@ -299,6 +301,7 @@ def run_sts_extra(model, tokenizer, args) -> None:
             states, hiddens = extract_features_batch(
                 model, tokenizer, sentences, args.batch_size, args.max_length,
                 layer=args.layer, need_state=not args.hidden_only,
+                prompt_style=getattr(args, "prompt_style", ""),
             )
 
         # InfoNCE 训练无需分数, 检索式数据无 score 字段 → 填充 1.0 (保持缓存格式)
@@ -358,6 +361,14 @@ def main():
                              "避免全量 state 落盘 (~700GB→15GB)。与 02/07 的 --state-pca-from 同源")
     parser.add_argument("--sts-names", type=str, default="",
                         help="sts_extra 任务的数据集名列表 (逗号分隔, 默认 nli_train,extra_train,sickr)")
+    parser.add_argument("--prompt-style", type=str, default="",
+                        choices=["", "eol", "io", "qa", "ins"],
+                        help="文本模板 + last-token hidden (''=无模板 mean pooling): "
+                             "eol='This sentence: \"x\" means in one word:'; "
+                             "io='Input: x\\n\\nOutput:'; "
+                             "qa='User: x\\n\\nAssistant:' (RWKV 官方 QA 格式); "
+                             "ins='Instruction: Summarize...\\n\\nInput: x\\n\\nResponse:' (RWKV 官方 Instruction 格式). "
+                             "state 不变 (末 token 递归状态)")
     args = parser.parse_args()
 
     global MODEL_PATH, OUTPUT_DIR
@@ -372,6 +383,7 @@ def main():
     print(f"  batch_size: {args.batch_size} (并发推理)", flush=True)
     print(f"  max_length: {args.max_length} tokens", flush=True)
     print(f"  layer: {args.layer}", flush=True)
+    print(f"  pooling: {args.prompt_style + ' (last-token)' if args.prompt_style else 'mean'}", flush=True)
     print(f"  output: {OUTPUT_DIR}", flush=True)
     print("=" * 60, flush=True)
 
