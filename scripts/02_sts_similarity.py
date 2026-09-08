@@ -121,7 +121,7 @@ def spearman_corr(x: np.ndarray, y: np.ndarray) -> float:
 # 训练
 # ============================================================
 def train_one(seed, train_data, dev_data, test_data, temperature=0.5, n_epochs=50, device="cpu",
-              hidden_dim=512, output_dim=128, dropout=0.2):
+              hidden_dim=512, output_dim=128, dropout=0.2, init_state=None):
     torch.manual_seed(seed)
     np.random.seed(seed)
 
@@ -145,6 +145,9 @@ def train_one(seed, train_data, dev_data, test_data, temperature=0.5, n_epochs=5
     scores_test_cpu = test_data[2]
 
     model = MlpProj(input_dim=train_data[0].shape[1], hidden_dim=hidden_dim, output_dim=output_dim, dropout=dropout).to(device)
+    if init_state is not None:
+        # 两阶段: 从预训练投影器 (如 07 InfoNCE) 初始化后微调
+        model.load_state_dict(init_state)
     optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3, weight_decay=1e-3)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=n_epochs)
 
@@ -224,6 +227,12 @@ def main():
     parser.add_argument("--device", type=str, default="cpu")
     parser.add_argument("--no-extra", action="store_true",
                         help="仅用 STS-B train (baseline), 不用 NLI/extra_train/sickr")
+    parser.add_argument("--extra-datasets", type=str, default="nli_train,extra_train,sickr",
+                        help="额外训练数据集名列表 (逗号分隔, 对应缓存 sts_pair_l{layer}_{name}.npz)")
+    parser.add_argument("--proj-suffix", type=str, default="",
+                        help="投影器文件名后缀 (区分不同训练数据版本, 如 _million)")
+    parser.add_argument("--init-from", type=str, default="",
+                        help="预训练投影器 .pt (文件名置于 cache-dir 或完整路径), 初始化权重后微调")
     parser.add_argument("--hidden-dim", type=int, default=512)
     parser.add_argument("--output-dim", type=int, default=128)
     parser.add_argument("--dropout", type=float, default=0.2)
@@ -268,8 +277,8 @@ def main():
     print(f"  train (STS-B): {len(scores)} pairs", flush=True)
 
     if not args.no_extra:
-        # 额外训练数据: nli_train, extra_train, sickr
-        extra_datasets = ["nli_train", "extra_train", "sickr"]
+        # 额外训练数据 (缓存缺失的自动跳过)
+        extra_datasets = [n.strip() for n in args.extra_datasets.split(",") if n.strip()]
         for name in extra_datasets:
             cache_path = args.cache_dir / f"sts_pair_l{args.layer}_{name}.npz"
             if not cache_path.exists():
@@ -375,6 +384,18 @@ def main():
     print(f"\n训练: {len(train_data[2])} pairs, 特征维度: {train_data[0].shape[1]}", flush=True)
 
     # 5. 训练 5 seed 集成
+    # 两阶段微调: 加载预训练投影器 (07 InfoNCE 输出), 每个 seed 用相同初始权重
+    init_state = None
+    if args.init_from:
+        init_path = Path(args.init_from)
+        if not init_path.exists():
+            init_path = args.cache_dir / args.init_from
+        ckpt = torch.load(init_path, map_location="cpu")
+        init_state = ckpt["state_dicts"][0]
+        cfg = ckpt.get("config", {})
+        print(f"\n-- 从预训练投影器初始化: {init_path} "
+              f"(loss={cfg.get('loss', '?')}, best_dev={cfg.get('best_dev_spearman', '?')}) --", flush=True)
+
     print(f"\n-- 训练 {len(args.seeds)} seeds 集成 --", flush=True)
     all_emb_test = []
     saved_projections = []  # 保存每个 seed 的 state_dict, 用于聚类等其他任务
@@ -382,7 +403,8 @@ def main():
         t0 = time.time()
         dev_sp, test_sp, emb1_test, emb2_test, proj_state = train_one(
             seed, train_data, dev_data, test_data, args.temperature, args.n_epochs, args.device,
-            hidden_dim=args.hidden_dim, output_dim=args.output_dim, dropout=args.dropout
+            hidden_dim=args.hidden_dim, output_dim=args.output_dim, dropout=args.dropout,
+            init_state=init_state,
         )
         all_emb_test.append((emb1_test, emb2_test))
         saved_projections.append(proj_state)
@@ -396,10 +418,10 @@ def main():
 
     # 保存 projection 模型 (供聚类等其他任务使用)
     if args.feature == "state":
-        proj_name = (f"universal_projection_state_topk{args.top_k_heads}_l{args.layer}.pt"
-                     if args.top_k_heads > 0 else f"universal_projection_state_l{args.layer}.pt")
+        proj_name = (f"universal_projection_state_topk{args.top_k_heads}_l{args.layer}{args.proj_suffix}.pt"
+                     if args.top_k_heads > 0 else f"universal_projection_state_l{args.layer}{args.proj_suffix}.pt")
     else:
-        proj_name = f"universal_projection_l{args.layer}.pt"
+        proj_name = f"universal_projection_l{args.layer}{args.proj_suffix}.pt"
     proj_save_path = args.cache_dir / proj_name
     save_dict = {
         "seeds": args.seeds,

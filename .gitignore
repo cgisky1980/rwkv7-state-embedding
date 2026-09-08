@@ -41,3 +41,7 @@ latex/*.out
 
 # 大体积特征缓存 (30GB+, 可由脚本重新生成)
 scripts/saved/
+
+# 大体积训练数据 (可由 collect_*.py 从 HuggingFace 重新下载生成)
+data/sts_retrieval/
+data/sts_million/

@@ -21,7 +21,7 @@ import numpy as np
 # ============================================================
 def save_npz(
     path: Path,
-    states: np.ndarray,
+    states: np.ndarray | None,
     hiddens: np.ndarray,
     extra: dict | None = None,
 ) -> None:
@@ -29,16 +29,15 @@ def save_npz(
 
     Args:
         path: 输出路径 (.npz)
-        states: (N, state_dim) float32 / float16
+        states: (N, state_dim) float32 / float16; None 则跳过 (hidden-only 模式)
         hiddens: (N, hidden_dim) float32 / float16
         extra: 额外数组 (如 labels, scores)
     """
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    arrays = {
-        "states": states.astype(np.float16, copy=False),
-        "hiddens": hiddens.astype(np.float16, copy=False),
-    }
+    arrays = {"hiddens": hiddens.astype(np.float16, copy=False)}
+    if states is not None:
+        arrays["states"] = states.astype(np.float16, copy=False)
     if extra:
         for k, v in extra.items():
             arrays[k] = np.asarray(v)

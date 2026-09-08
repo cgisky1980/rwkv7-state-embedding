@@ -207,7 +207,7 @@ def run_sts_extra(model, tokenizer, args) -> None:
     print("任务四: 额外 STS 训练数据特征提取 (batch 并发)", flush=True)
     print("=" * 60, flush=True)
 
-    datasets = ["nli_train", "extra_train", "sickr"]
+    datasets = args.sts_names.split(",") if args.sts_names else ["nli_train", "extra_train", "sickr"]
     sts_subdir = getattr(args, "sts_subdir", "sts")
     sts_dir = DATA_DIR / sts_subdir
     print(f"  STS 数据目录: {sts_dir}", flush=True)
@@ -220,16 +220,25 @@ def run_sts_extra(model, tokenizer, args) -> None:
         records = read_jsonl(data_path)
         print(f"\n  -- {name} -- ({len(records)} pairs)", flush=True)
 
+        # 检索式数据 (collect_retrieval_sts.py 输出) 含 negative 字段 → 三元组 stride 3
+        has_neg = bool(records) and "negative" in records[0]
+        if has_neg:
+            print(f"  含 negative 字段, 按三元组提取 (stride 3)", flush=True)
+
         sentences = []
         for r in records:
             sentences.append(r["sentence1"])
             sentences.append(r["sentence2"])
+            if has_neg:
+                sentences.append(r["negative"])
 
         states, hiddens = extract_features_batch(
-            model, tokenizer, sentences, args.batch_size, args.max_length, layer=args.layer
+            model, tokenizer, sentences, args.batch_size, args.max_length,
+            layer=args.layer, need_state=not args.hidden_only,
         )
 
-        scores = np.array([r["score"] for r in records], dtype=np.float32)
+        # InfoNCE 训练无需分数, 检索式数据无 score 字段 → 填充 1.0 (保持缓存格式)
+        scores = np.array([r.get("score", 1.0) for r in records], dtype=np.float32)
         out_path = OUTPUT_DIR / f"sts_pair_l{args.layer}_{name}.npz"
         save_npz(out_path, states, hiddens, extra={"scores": scores})
 
@@ -277,6 +286,10 @@ def main():
     parser.add_argument("--sts-subdir", type=str, default="sts", help="STS 数据子目录 (sts 或 sts_dedup)")
     parser.add_argument("--model-path", type=str, default="", help="模型 .pth 路径 (默认 0.4B)")
     parser.add_argument("--out-dir", type=str, default="", help="输出缓存目录 (默认 cache_python，可传独立目录避免覆盖)")
+    parser.add_argument("--hidden-only", action="store_true",
+                        help="只提取 hidden 不存 state (百万级数据避免 100GB+ 内存/磁盘)")
+    parser.add_argument("--sts-names", type=str, default="",
+                        help="sts_extra 任务的数据集名列表 (逗号分隔, 默认 nli_train,extra_train,sickr)")
     args = parser.parse_args()
 
     global MODEL_PATH, OUTPUT_DIR

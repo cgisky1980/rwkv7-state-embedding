@@ -180,7 +180,8 @@ def extract_features_batch(
     max_length: int = 512,
     layer: int = 12,
     pad_token: int = 0,
-) -> Tuple[np.ndarray, np.ndarray]:
+    need_state: bool = True,
+) -> Tuple[np.ndarray | None, np.ndarray]:
     """批量并发提取 WKV state + mean hidden state (按长度分桶, 无 padding 污染).
 
     相比 extract_features (单序列), 本函数按 token 长度分桶后用 forward_seq_batch
@@ -194,9 +195,10 @@ def extract_features_batch(
         max_length: 最大 token 长度（截断）
         layer: 提取 WKV state 的层索引
         pad_token: 空 token id
+        need_state: False 时跳过 state (hidden-only 模式, 省内存/磁盘/拷贝)
 
     Returns:
-        states: (N, H*N*N) float16 - WKV state（指定层, 按原 texts 顺序）
+        states: (N, H*N*N) float16 - WKV state（指定层, 按原 texts 顺序）; need_state=False 时为 None
         hiddens: (N, C) float16 - mean pooling hidden state（按原 texts 顺序）
     """
     from rwkv7 import RWKV_x070_TMix_seq_batch, RWKV_x070_CMix_seq_batch
@@ -224,7 +226,7 @@ def extract_features_batch(
         buckets[len(tokens)].append((i, tokens))
 
     state_dim = n_head * head_size * head_size
-    all_states = np.zeros((n, state_dim), dtype=np.float16)
+    all_states = np.zeros((n, state_dim), dtype=np.float16) if need_state else None
     all_hiddens = np.zeros((n, n_embd), dtype=np.float16)
 
     print(f"  分桶数: {len(buckets)}, 总样本: {n}", flush=True)
@@ -275,10 +277,11 @@ def extract_features_batch(
             # hidden = mean pooling over tokens
             hidden = x.float().mean(dim=1).half()  # (B, C)
             # WKV state: state[1][layer] shape (B, H, N, N)
-            wkv = state[1][layer]  # (B, H, N, N) - half
+            wkv = state[1][layer] if need_state else None  # (B, H, N, N) - half
 
             for k, orig_idx in enumerate(orig_indices):
-                all_states[orig_idx] = wkv[k].reshape(-1).cpu().numpy()
+                if wkv is not None:
+                    all_states[orig_idx] = wkv[k].reshape(-1).cpu().numpy()
                 all_hiddens[orig_idx] = hidden[k].cpu().numpy()
 
             processed += bsz
