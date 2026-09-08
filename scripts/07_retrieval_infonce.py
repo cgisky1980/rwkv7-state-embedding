@@ -38,8 +38,12 @@ MlpProj = sts2.MlpProj
 spearman_corr = sts2.spearman_corr
 
 
-def load_retrieval_hiddens(retrieval_dir: Path, layer: int, names: list) -> dict:
-    """加载检索式缓存 → {name: (A, P, N_or_None)} float16"""
+def load_retrieval_pools(retrieval_dir: Path, layer: int, names: list, feature: str) -> dict:
+    """加载检索式缓存 → {name: (A, P, N_or_None)} float16
+
+    feature: hidden=仅 hidden; state=states 槽 (低维 PCA 特征, 由 extract --state-pca-from 生成);
+             fusion=hidden ⊕ state 拼接
+    """
     out = {}
     for name in names:
         p = retrieval_dir / f"sts_pair_l{layer}_{name}.npz"
@@ -51,12 +55,41 @@ def load_retrieval_hiddens(retrieval_dir: Path, layer: int, names: list) -> dict
         n_pairs = len(data["scores"])
         stride = hid.shape[0] // n_pairs
         assert stride in (2, 3), f"{name}: stride={stride} 异常"
-        A = np.ascontiguousarray(hid[0::stride])
-        P = np.ascontiguousarray(hid[1::stride])
-        N = np.ascontiguousarray(hid[2::stride]) if stride == 3 else None
+        if feature == "hidden":
+            feats = hid
+        elif feature == "state":
+            feats = data["states"]  # (2N or 3N, D) 低维 PCA 特征
+        else:  # fusion
+            feats = np.concatenate([hid, data["states"]], axis=1)
+        A = np.ascontiguousarray(feats[0::stride])
+        P = np.ascontiguousarray(feats[1::stride])
+        N = np.ascontiguousarray(feats[2::stride]) if stride == 3 else None
         out[name] = (A, P, N)
-        print(f"  {name}: {n_pairs} 对 (stride {stride})", flush=True)
+        print(f"  {name}: {n_pairs} 对 (stride {stride}), 特征 {feats.shape[1]} 维", flush=True)
     return out
+
+
+def load_state_pca_transform(path: Path):
+    """从投影器 .pt 读取 (head_indices, pca_components, pca_mean, per_head_dim)"""
+    ckpt = torch.load(path, map_location="cpu")
+    sel = ckpt.get("head_selection")
+    if sel is None:
+        raise SystemExit(f"错误: {path} 不含 head_selection")
+    per = sel["head_size"] * sel["head_size"]
+    return (
+        list(sel["head_indices"]),
+        np.asarray(sel["pca_components"], dtype=np.float32),
+        np.asarray(sel["pca_mean"], dtype=np.float32),
+        per,
+    )
+
+
+def transform_state_features(states_full: np.ndarray, transform) -> np.ndarray:
+    """全量 state (N, 49152) → Top-K head 选择 + PCA → (N, D) float32"""
+    head_idx, comps, mean, per = transform
+    cols = np.concatenate([np.arange(h * per, (h + 1) * per) for h in head_idx])
+    x = states_full[:, cols].astype(np.float32)
+    return (x - mean) @ comps.T
 
 
 def main() -> None:
@@ -65,6 +98,12 @@ def main() -> None:
     parser.add_argument("--cache-dir", type=Path, default=Path("../cache_python_0.1b_clean"),
                         help="STS-B dev 缓存目录 (评估用)")
     parser.add_argument("--layer", type=int, default=11)
+    parser.add_argument("--feature", choices=["hidden", "state", "fusion"], default="hidden",
+                        help="hidden=hidden 特征 (默认); state=低维 state PCA 特征 "
+                             "(缓存需由 extract --state-pca-from 生成); fusion=hidden⊕state 拼接")
+    parser.add_argument("--state-pca-from", type=str, default="",
+                        help="feature=state/fusion 时必填: 投影器 .pt (提供 Top-K head 选择+PCA, "
+                             "用于变换 STS-B dev 的全量 state)")
     parser.add_argument("--datasets", type=str, default="",
                         help="逗号分隔数据集名 (默认自动发现目录下全部)")
     parser.add_argument("--temperature", type=float, default=0.05,
@@ -86,12 +125,28 @@ def main() -> None:
     print("任务七: 检索式 InfoNCE 预训练 (in-batch negatives)", flush=True)
     print("=" * 60, flush=True)
 
-    # 1. 加载 STS-B dev (评估用)
+    # 1. 加载 STS-B dev (评估用): 按 feature 构建特征
     dev_path = args.cache_dir / f"sts_pair_l{args.layer}_dev.npz"
     dev_data = np.load(dev_path)
     dev_hiddens = dev_data["hiddens"].astype(np.float32)  # (2N, C)
     dev_scores = dev_data["scores"]
     print(f"  STS-B dev: {len(dev_scores)} pairs", flush=True)
+    if args.feature == "hidden":
+        dev_feats_np = dev_hiddens
+    else:
+        # state/fusion: 变换 dev 全量 state (clean dev 缓存含 49152 维 states)
+        if not args.state_pca_from:
+            raise SystemExit("错误: --feature state/fusion 需要 --state-pca-from")
+        sp_path = Path(args.state_pca_from)
+        if not sp_path.exists():
+            sp_path = args.cache_dir.parent / args.state_pca_from
+        transform = load_state_pca_transform(sp_path)
+        dev_states_pca = transform_state_features(dev_data["states"], transform)
+        dev_feats_np = (dev_hiddens if args.feature == "fusion"
+                        else dev_states_pca)
+        if args.feature == "fusion":
+            dev_feats_np = np.concatenate([dev_hiddens, dev_states_pca], axis=1)
+        print(f"  dev 特征: {dev_feats_np.shape[1]} 维 ({args.feature})", flush=True)
 
     # 2. 加载检索式缓存
     if args.datasets:
@@ -101,8 +156,8 @@ def main() -> None:
             p.stem.split(f"sts_pair_l{args.layer}_")[1]
             for p in args.retrieval_dir.glob(f"sts_pair_l{args.layer}_*.npz")
         )
-    print(f"\n-- 加载检索缓存 ({len(names)} 个) --", flush=True)
-    pools = load_retrieval_hiddens(args.retrieval_dir, args.layer, names)
+    print(f"\n-- 加载检索缓存 ({len(names)} 个, feature={args.feature}) --", flush=True)
+    pools = load_retrieval_pools(args.retrieval_dir, args.layer, names, args.feature)
     assert pools, "无可用检索缓存"
 
     # 3. 合并 + shuffle + 补齐缺失负例
@@ -139,7 +194,7 @@ def main() -> None:
     total_steps = args.n_epochs * ((M + args.batch_size - 1) // args.batch_size)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=total_steps)
 
-    dev_feats = torch.from_numpy(dev_hiddens).float()
+    dev_feats = torch.from_numpy(np.ascontiguousarray(dev_feats_np)).float()
 
     def eval_dev() -> float:
         model.eval()
@@ -209,6 +264,7 @@ def main() -> None:
         "state_dicts": [best_state],
         "config": {
             "input_dim": A.shape[1],
+            "feature": args.feature,
             "hidden_dim": args.hidden_dim,
             "output_dim": args.output_dim,
             "dropout": args.dropout,

@@ -192,6 +192,51 @@ def run_sts(model, tokenizer, args) -> None:
         save_npz(out_path, states, hiddens, extra={"scores": scores})
 
 
+def _load_state_pca_transform(path: Path):
+    """从投影器 .pt 读取 (head_indices, pca_components, pca_mean, per_head_dim)"""
+    import torch
+    ckpt = torch.load(path, map_location="cpu")
+    sel = ckpt.get("head_selection")
+    if sel is None:
+        raise SystemExit(f"错误: {path} 不含 head_selection, 无法用于 state 降维")
+    per = sel["head_size"] * sel["head_size"]
+    return (
+        list(sel["head_indices"]),
+        np.asarray(sel["pca_components"], dtype=np.float32),  # (D, K*per)
+        np.asarray(sel["pca_mean"], dtype=np.float32),         # (K*per,)
+        per,
+    )
+
+
+def _extract_state_pca_chunked(model, tokenizer, sentences, args, transform, n_embd: int):
+    """分块提取 + 实时 head 选择/PCA 降维 (避免全量 49152 维 state 驻留内存/磁盘)。
+
+    返回 (states_pca (N, D) fp16, hiddens (N, C) fp16)。
+    """
+    head_idx, comps, mean, per = transform
+    cols = np.concatenate([np.arange(h * per, (h + 1) * per) for h in head_idx])
+    n = len(sentences)
+    out_states = np.zeros((n, comps.shape[0]), dtype=np.float16)
+    out_hiddens = np.zeros((n, n_embd), dtype=np.float16)
+
+    CHUNK = 100_000  # 每块 transient state 内存 ~9.8GB fp16
+    n_chunks = (n + CHUNK - 1) // CHUNK
+    for ci in range(n_chunks):
+        c0 = ci * CHUNK
+        chunk = sentences[c0:c0 + CHUNK]
+        print(f"\n  [chunk {ci+1}/{n_chunks}] {len(chunk)} texts", flush=True)
+        states, hiddens = extract_features_batch(
+            model, tokenizer, chunk, args.batch_size, args.max_length,
+            layer=args.layer, need_state=True,
+        )
+        x = states[:, cols].astype(np.float32)
+        x = (x - mean) @ comps.T
+        out_states[c0:c0 + len(chunk)] = x.astype(np.float16)
+        out_hiddens[c0:c0 + len(chunk)] = hiddens
+        del states, hiddens, x
+    return out_states, out_hiddens
+
+
 def run_sts_extra(model, tokenizer, args) -> None:
     """任务四: 提取额外 STS 训练数据 (用于训练 universal projection).
 
@@ -211,10 +256,21 @@ def run_sts_extra(model, tokenizer, args) -> None:
     sts_subdir = getattr(args, "sts_subdir", "sts")
     sts_dir = DATA_DIR / sts_subdir
     print(f"  STS 数据目录: {sts_dir}", flush=True)
+
+    # state 实时降维变换 (可选)
+    state_pca_transform = None
+    if getattr(args, "state_pca_from", ""):
+        sp_path = Path(args.state_pca_from)
+        if not sp_path.exists():
+            sp_path = PAPER_DIR / args.state_pca_from
+        state_pca_transform = _load_state_pca_transform(sp_path)
+        h_idx, comps, _, _ = state_pca_transform
+        print(f"  state 降维: heads={h_idx} → PCA {comps.shape[0]} 维 (源: {sp_path})", flush=True)
+
     for name in datasets:
         data_path = sts_dir / f"{name}.jsonl"
         if not data_path.exists():
-            print(f"  [skip] {data_path} 不存在", flush=True)
+            print(f"  [skip] {name}: {data_path} 不存在", flush=True)
             continue
 
         records = read_jsonl(data_path)
@@ -232,10 +288,18 @@ def run_sts_extra(model, tokenizer, args) -> None:
             if has_neg:
                 sentences.append(r["negative"])
 
-        states, hiddens = extract_features_batch(
-            model, tokenizer, sentences, args.batch_size, args.max_length,
-            layer=args.layer, need_state=not args.hidden_only,
-        )
+        if state_pca_transform is not None:
+            # 分块提取 + 实时降维: states 槽存低维 PCA 特征
+            t0 = time.time()
+            states, hiddens = _extract_state_pca_chunked(
+                model, tokenizer, sentences, args, state_pca_transform, model.n_embd)
+            print(f"  {name} 提取+降维完成 ({time.time()-t0:.1f}s): "
+                  f"states {states.shape}, hiddens {hiddens.shape}", flush=True)
+        else:
+            states, hiddens = extract_features_batch(
+                model, tokenizer, sentences, args.batch_size, args.max_length,
+                layer=args.layer, need_state=not args.hidden_only,
+            )
 
         # InfoNCE 训练无需分数, 检索式数据无 score 字段 → 填充 1.0 (保持缓存格式)
         scores = np.array([r.get("score", 1.0) for r in records], dtype=np.float32)
@@ -288,6 +352,10 @@ def main():
     parser.add_argument("--out-dir", type=str, default="", help="输出缓存目录 (默认 cache_python，可传独立目录避免覆盖)")
     parser.add_argument("--hidden-only", action="store_true",
                         help="只提取 hidden 不存 state (百万级数据避免 100GB+ 内存/磁盘)")
+    parser.add_argument("--state-pca-from", type=str, default="",
+                        help="state 实时降维: 从该投影器 .pt 读取 Top-K head 选择 + PCA 分量, "
+                             "提取时将 49152 维 state 变换为低维 (如 256) 后存入 states 槽, "
+                             "避免全量 state 落盘 (~700GB→15GB)。与 02/07 的 --state-pca-from 同源")
     parser.add_argument("--sts-names", type=str, default="",
                         help="sts_extra 任务的数据集名列表 (逗号分隔, 默认 nli_train,extra_train,sickr)")
     args = parser.parse_args()

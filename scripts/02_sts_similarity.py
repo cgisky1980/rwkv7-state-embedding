@@ -237,13 +237,17 @@ def main():
     parser.add_argument("--output-dim", type=int, default=128)
     parser.add_argument("--dropout", type=float, default=0.2)
     parser.add_argument("--layer", type=int, default=LAYER, help="WKV state 提取层 (文件名层号)")
-    parser.add_argument("--feature", choices=["hidden", "state"], default="hidden",
-                        help="用于训练投影器的特征: hidden=最后一层 hidden state, state=WKV state")
+    parser.add_argument("--feature", choices=["hidden", "state", "fusion"], default="hidden",
+                        help="用于训练投影器的特征: hidden=最后一层 hidden state, state=WKV state, "
+                             "fusion=hidden + state 变换后拼接")
     parser.add_argument("--top-k-heads", type=int, default=0,
-                        help=">0 时启用 Top-K Head 选择 (仅 state 特征, paper §4.3.4 方法): "
+                        help=">0 时启用 Top-K Head 选择 (state/fusion 特征, paper §4.3.4 方法): "
                              "逐 head 评估 dev Spearman → 选 Top-K head 拼接 → PCA 降维 → 投影器")
     parser.add_argument("--pca-dim", type=int, default=256,
                         help="Top-K head 拼接后的 PCA 降维维度")
+    parser.add_argument("--state-pca-from", type=str, default="",
+                        help="复用已有 state 投影器 .pt 的 head 选择 + PCA 分量 (fusion 与单 state 投影"
+                             "共用同一份中间数据, 跳过逐 head 评估), 如 universal_projection_state_topk8_l11.pt")
     parser.add_argument("--head-eval-epochs", type=int, default=10,
                         help="逐 head 评估时小投影器的训练轮数")
     args = parser.parse_args()
@@ -253,27 +257,22 @@ def main():
     print("=" * 60, flush=True)
 
     # 1. 加载 STS-B dev/test (评估用) - scores 直接来自缓存
-    def pick_feature(states, hiddens):
-        return states if args.feature == "state" else hiddens
-
     splits = {}
     for split in ["dev", "test"]:
         cache_path = args.cache_dir / f"sts_pair_l{args.layer}_{split}.npz"
         states, hiddens, scores = load_npz_with_scores(cache_path)
-        features = pick_feature(states, hiddens)
-        splits[split] = {"features": features, "scores": scores}
-        print(f"  {split}: {len(scores)} pairs, {args.feature} {features.shape}", flush=True)
+        splits[split] = {"states": states, "hiddens": hiddens, "scores": scores}
+        state_info = f", state {states.shape}" if states is not None else ""
+        print(f"  {split}: {len(scores)} pairs, hidden {hiddens.shape}{state_info}", flush=True)
 
     # 2. 加载训练数据
     # 训练集: sts_train (必有) + nli_train + extra_train + sickr (可选)
-    train_feats_list = []
-    train_scores_list = []
+    train_parts = []  # (states, hiddens, scores)
 
     # STS-B train
     cache_path = args.cache_dir / f"sts_pair_l{args.layer}_train.npz"
     states, hiddens, scores = load_npz_with_scores(cache_path)
-    train_feats_list.append(pick_feature(states, hiddens))
-    train_scores_list.append(scores)
+    train_parts.append((states, hiddens, scores))
     print(f"  train (STS-B): {len(scores)} pairs", flush=True)
 
     if not args.no_extra:
@@ -285,83 +284,148 @@ def main():
                 print(f"  [skip] {name}: {cache_path} 不存在", flush=True)
                 continue
             states, hiddens, scores = load_npz_with_scores(cache_path)
-            train_feats_list.append(pick_feature(states, hiddens))
-            train_scores_list.append(scores)
+            train_parts.append((states, hiddens, scores))
             print(f"  train ({name}): {len(scores)} pairs", flush=True)
 
-    # 合并训练数据
-    train_features = np.concatenate(train_feats_list, axis=0)
-    train_scores = np.concatenate(train_scores_list, axis=0)
+    # 合并训练数据 (states 可能为 None: hidden-only 缓存)
+    use_state = args.feature in ("state", "fusion")
+    train_states = np.concatenate([p[0] for p in train_parts], axis=0) if train_parts[0][0] is not None else None
+    train_hiddens = np.concatenate([p[1] for p in train_parts], axis=0)
+    train_scores = np.concatenate([p[2] for p in train_parts], axis=0)
     print(f"\n  总训练数据: {len(train_scores)} pairs", flush=True)
+    if use_state and train_states is None:
+        raise SystemExit(f"错误: --feature {args.feature} 需要含 states 的缓存 (当前缓存仅 hidden)")
 
     # ========================================================
-    # Top-K Head 选择 (paper §4.3.4 方法, 仅 state 特征)
-    # 1. 逐 head 评估: 每 head 4096 维 → PCA64 → 小投影器 → dev Spearman
-    # 2. 选 Top-K head 拼接 → PCA pca_dim → 替换特征
+    # state 特征变换 (state / fusion 特征, Top-K Head + PCA, paper §4.3.4)
+    # --state-pca-from: 复用已有投影器的 head 选择 + PCA 分量
+    #   (fusion 与单 state 投影共用同一份中间数据, 跳过逐 head 评估)
     # ========================================================
     head_selection_state = None
-    if args.feature == "state" and args.top_k_heads > 0:
-        from sklearn.decomposition import PCA
-
+    train_state_part = None
+    state_parts = {}  # split -> 变换后 state 特征
+    if use_state:
         HEAD_SIZE_SQ = 64 * 64
-        n_head = train_features.shape[1] // HEAD_SIZE_SQ
-        assert n_head * HEAD_SIZE_SQ == train_features.shape[1], "state 维度不是 64x64 head 的整数倍"
-        dev_feats_raw = splits["dev"]["features"]
-        test_feats_raw = splits["test"]["features"]
+        n_head = train_states.shape[1] // HEAD_SIZE_SQ
+        assert n_head * HEAD_SIZE_SQ == train_states.shape[1], "state 维度不是 64x64 head 的整数倍"
+        dev_states_raw = splits["dev"]["states"]
+        test_states_raw = splits["test"]["states"]
 
-        print(f"\n-- Top-{args.top_k_heads} Head 选择 (n_head={n_head}, 每 head {HEAD_SIZE_SQ} 维) --", flush=True)
+        if args.state_pca_from:
+            # 复用已有 head 选择 + PCA: 与单 state 投影的中间数据完全一致
+            src_path = Path(args.state_pca_from)
+            if not src_path.exists():
+                src_path = args.cache_dir / args.state_pca_from
+            src_ckpt = torch.load(src_path, map_location="cpu")
+            if "head_selection" not in src_ckpt:
+                raise SystemExit(f"错误: {src_path} 不含 head_selection, 无法复用")
+            src_sel = src_ckpt["head_selection"]
+            top_heads = list(src_sel["head_indices"])
+            pca_components = np.asarray(src_sel["pca_components"], dtype=np.float32)
+            pca_mean = np.asarray(src_sel["pca_mean"], dtype=np.float32)
+            src_cfg = src_ckpt.get("config", {})
+            print(f"\n-- 复用 head 选择 + PCA: {src_path} --", flush=True)
+            print(f"  heads={top_heads}, PCA {pca_components.shape[0]} 维 "
+                  f"(源投影器 train_pairs={src_cfg.get('train_pairs', '?')})", flush=True)
 
-        def make_pairs_np(feats_arr, scores_arr):
-            s1 = feats_arr[0::2]
-            s2 = feats_arr[1::2]
-            return (
-                torch.from_numpy(np.ascontiguousarray(s1)).float(),
-                torch.from_numpy(np.ascontiguousarray(s2)).float(),
-                torch.from_numpy(np.ascontiguousarray(scores_arr)).float(),
-            )
+            def select_heads(feats):
+                return np.concatenate(
+                    [feats[:, h * HEAD_SIZE_SQ:(h + 1) * HEAD_SIZE_SQ] for h in top_heads], axis=1
+                )
 
-        # 1. 逐 head 评估 (dev Spearman 排序, head 选择只用 dev 不接触 test)
-        head_dev_scores = []
-        for h in range(n_head):
-            cols = slice(h * HEAD_SIZE_SQ, (h + 1) * HEAD_SIZE_SQ)
-            pca_h = PCA(n_components=64, random_state=42)
-            Xtr_h = pca_h.fit_transform(train_features[:, cols].astype(np.float32))
-            Xdv_h = pca_h.transform(dev_feats_raw[:, cols].astype(np.float32))
-            tr_pairs = make_pairs_np(Xtr_h, train_scores)
-            dv_pairs = make_pairs_np(Xdv_h, splits["dev"]["scores"])
-            dev_sp_h, _, _, _, _ = train_one(
-                42, tr_pairs, dv_pairs, dv_pairs, args.temperature,
-                args.head_eval_epochs, args.device,
-                hidden_dim=256, output_dim=128, dropout=args.dropout,
-            )
-            head_dev_scores.append((h, dev_sp_h))
-            print(f"  H{h:2d}: dev Spearman = {dev_sp_h:.4f}", flush=True)
+            def pca_apply(X):
+                return ((X - pca_mean) @ pca_components.T).astype(np.float32)
 
-        head_dev_scores.sort(key=lambda x: x[1], reverse=True)
-        top_heads = [h for h, _ in head_dev_scores[: args.top_k_heads]]
-        print(f"  Top-{args.top_k_heads} heads (按 dev 选择): {top_heads}", flush=True)
+            t0_pca = time.time()
+            train_state_part = pca_apply(select_heads(train_states))
+            state_parts["dev"] = pca_apply(select_heads(dev_states_raw))
+            state_parts["test"] = pca_apply(select_heads(test_states_raw))
+            print(f"  变换完成 ({time.time()-t0_pca:.1f}s), state 特征维度: {train_state_part.shape[1]}", flush=True)
 
-        # 2. Top-K 拼接 + PCA 降维 (PCA 在 train 句子行上 fit)
-        def select_heads(feats):
-            return np.concatenate(
-                [feats[:, h * HEAD_SIZE_SQ:(h + 1) * HEAD_SIZE_SQ] for h in top_heads], axis=1
-            )
+            head_selection_state = src_sel  # 原样保存, MTEB 端应用同一变换
+        elif args.top_k_heads > 0:
+            # 逐 head 评估 → Top-K 拼接 → PCA (与单 state 投影同流程)
+            from sklearn.decomposition import PCA
 
-        print(f"  拼接 {args.top_k_heads} head → {args.top_k_heads * HEAD_SIZE_SQ} 维, PCA → {args.pca_dim} 维...", flush=True)
-        t0_pca = time.time()
-        pca = PCA(n_components=args.pca_dim, svd_solver="randomized", random_state=42)
-        train_features = pca.fit_transform(select_heads(train_features).astype(np.float32)).astype(np.float32)
-        splits["dev"]["features"] = pca.transform(select_heads(dev_feats_raw).astype(np.float32)).astype(np.float32)
-        splits["test"]["features"] = pca.transform(select_heads(test_feats_raw).astype(np.float32)).astype(np.float32)
-        print(f"  PCA 完成 ({time.time()-t0_pca:.1f}s), 特征维度: {train_features.shape[1]}", flush=True)
+            print(f"\n-- Top-{args.top_k_heads} Head 选择 (n_head={n_head}, 每 head {HEAD_SIZE_SQ} 维) --", flush=True)
 
-        head_selection_state = {
-            "head_indices": top_heads,
-            "head_size": 64,
-            "pca_components": pca.components_.astype(np.float32),
-            "pca_mean": pca.mean_.astype(np.float32),
-            "head_dev_scores": head_dev_scores,
-        }
+            def make_pairs_np(feats_arr, scores_arr):
+                s1 = feats_arr[0::2]
+                s2 = feats_arr[1::2]
+                return (
+                    torch.from_numpy(np.ascontiguousarray(s1)).float(),
+                    torch.from_numpy(np.ascontiguousarray(s2)).float(),
+                    torch.from_numpy(np.ascontiguousarray(scores_arr)).float(),
+                )
+
+            # 1. 逐 head 评估 (dev Spearman 排序, head 选择只用 dev 不接触 test)
+            head_dev_scores = []
+            for h in range(n_head):
+                cols = slice(h * HEAD_SIZE_SQ, (h + 1) * HEAD_SIZE_SQ)
+                pca_h = PCA(n_components=64, random_state=42)
+                Xtr_h = pca_h.fit_transform(train_states[:, cols].astype(np.float32))
+                Xdv_h = pca_h.transform(dev_states_raw[:, cols].astype(np.float32))
+                tr_pairs = make_pairs_np(Xtr_h, train_scores)
+                dv_pairs = make_pairs_np(Xdv_h, splits["dev"]["scores"])
+                dev_sp_h, _, _, _, _ = train_one(
+                    42, tr_pairs, dv_pairs, dv_pairs, args.temperature,
+                    args.head_eval_epochs, args.device,
+                    hidden_dim=256, output_dim=128, dropout=args.dropout,
+                )
+                head_dev_scores.append((h, dev_sp_h))
+                print(f"  H{h:2d}: dev Spearman = {dev_sp_h:.4f}", flush=True)
+
+            head_dev_scores.sort(key=lambda x: x[1], reverse=True)
+            top_heads = [h for h, _ in head_dev_scores[: args.top_k_heads]]
+            print(f"  Top-{args.top_k_heads} heads (按 dev 选择): {top_heads}", flush=True)
+
+            # 2. Top-K 拼接 + PCA 降维 (PCA 在 train 句子行上 fit)
+            def select_heads(feats):
+                return np.concatenate(
+                    [feats[:, h * HEAD_SIZE_SQ:(h + 1) * HEAD_SIZE_SQ] for h in top_heads], axis=1
+                )
+
+            print(f"  拼接 {args.top_k_heads} head → {args.top_k_heads * HEAD_SIZE_SQ} 维, PCA → {args.pca_dim} 维...", flush=True)
+            t0_pca = time.time()
+            pca = PCA(n_components=args.pca_dim, svd_solver="randomized", random_state=42)
+            train_state_part = pca.fit_transform(select_heads(train_states).astype(np.float32)).astype(np.float32)
+            state_parts["dev"] = pca.transform(select_heads(dev_states_raw).astype(np.float32)).astype(np.float32)
+            state_parts["test"] = pca.transform(select_heads(test_states_raw).astype(np.float32)).astype(np.float32)
+            print(f"  PCA 完成 ({time.time()-t0_pca:.1f}s), state 特征维度: {train_state_part.shape[1]}", flush=True)
+
+            head_selection_state = {
+                "head_indices": top_heads,
+                "head_size": 64,
+                "pca_components": pca.components_.astype(np.float32),
+                "pca_mean": pca.mean_.astype(np.float32),
+                "head_dev_scores": head_dev_scores,
+            }
+        elif args.feature == "fusion":
+            raise SystemExit("错误: fusion 需要 --state-pca-from 或 --top-k-heads > 0 提供 state 变换")
+        # else: --feature state 且无变换 → 原始 49152 维 (历史整层过拟合实验配置)
+
+        # 释放原始 state 大数组
+        del train_states
+        for split in ["dev", "test"]:
+            del splits[split]["states"]
+        import gc
+        gc.collect()
+
+    # 构建最终特征
+    if args.feature == "hidden":
+        train_features = train_hiddens
+        for split in ["dev", "test"]:
+            splits[split]["features"] = splits[split]["hiddens"]
+    elif args.feature == "state":
+        train_features = train_state_part
+        for split in ["dev", "test"]:
+            splits[split]["features"] = state_parts[split]
+    else:  # fusion: hidden ⊕ state 变换特征
+        train_features = np.concatenate([train_hiddens, train_state_part], axis=1)
+        for split in ["dev", "test"]:
+            splits[split]["features"] = np.concatenate([splits[split]["hiddens"], state_parts[split]], axis=1)
+        print(f"\n  fusion: hidden {train_hiddens.shape[1]} + state {train_state_part.shape[1]} "
+              f"= {train_features.shape[1]} 维", flush=True)
 
     # 3. 无监督 baseline
     print(f"\n-- 无监督 baseline --", flush=True)
@@ -418,8 +482,12 @@ def main():
 
     # 保存 projection 模型 (供聚类等其他任务使用)
     if args.feature == "state":
-        proj_name = (f"universal_projection_state_topk{args.top_k_heads}_l{args.layer}{args.proj_suffix}.pt"
-                     if args.top_k_heads > 0 else f"universal_projection_state_l{args.layer}{args.proj_suffix}.pt")
+        k = len(head_selection_state["head_indices"]) if head_selection_state else args.top_k_heads
+        proj_name = (f"universal_projection_state_topk{k}_l{args.layer}{args.proj_suffix}.pt"
+                     if k > 0 else f"universal_projection_state_l{args.layer}{args.proj_suffix}.pt")
+    elif args.feature == "fusion":
+        k = len(head_selection_state["head_indices"]) if head_selection_state else args.top_k_heads
+        proj_name = f"universal_projection_fusion_topk{k}_l{args.layer}{args.proj_suffix}.pt"
     else:
         proj_name = f"universal_projection_l{args.layer}{args.proj_suffix}.pt"
     proj_save_path = args.cache_dir / proj_name
@@ -437,8 +505,8 @@ def main():
     }
     if head_selection_state is not None:
         save_dict["head_selection"] = head_selection_state
-        save_dict["config"]["feature"] = "state_topk"
-        save_dict["config"]["top_k_heads"] = args.top_k_heads
+        save_dict["config"]["feature"] = f"{args.feature}_topk"
+        save_dict["config"]["top_k_heads"] = len(head_selection_state["head_indices"])
     torch.save(save_dict, proj_save_path)
     print(f"\n  保存 projection: {proj_save_path}", flush=True)
 
