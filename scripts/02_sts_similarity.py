@@ -193,6 +193,7 @@ def main():
     parser.add_argument("--hidden-dim", type=int, default=512)
     parser.add_argument("--output-dim", type=int, default=128)
     parser.add_argument("--dropout", type=float, default=0.2)
+    parser.add_argument("--layer", type=int, default=LAYER, help="WKV state 提取层 (文件名层号)")
     args = parser.parse_args()
 
     print("=" * 60, flush=True)
@@ -203,7 +204,7 @@ def main():
     sts_orig_dir = args.data_dir.parent / "sts" if args.data_dir.name != "sts" else args.data_dir
     splits = {}
     for split in ["dev", "test"]:
-        cache_path = args.cache_dir / f"sts_pair_l{LAYER}_{split}.npz"
+        cache_path = args.cache_dir / f"sts_pair_l{args.layer}_{split}.npz"
         states, hiddens = load_npz(cache_path)
         records = read_jsonl(sts_orig_dir / f"sts_{split}.jsonl")
         scores = np.array([r["score"] for r in records], dtype=np.float32)
@@ -216,7 +217,7 @@ def main():
     train_scores_list = []
 
     # STS-B train
-    cache_path = args.cache_dir / f"sts_pair_l{LAYER}_train.npz"
+    cache_path = args.cache_dir / f"sts_pair_l{args.layer}_train.npz"
     states, hiddens = load_npz(cache_path)
     records = read_jsonl(args.data_dir / "sts_train.jsonl")
     scores = np.array([r["score"] for r in records], dtype=np.float32)
@@ -228,7 +229,7 @@ def main():
         # 额外训练数据: nli_train, extra_train, sickr
         extra_datasets = ["nli_train", "extra_train", "sickr"]
         for name in extra_datasets:
-            cache_path = args.cache_dir / f"sts_pair_l{LAYER}_{name}.npz"
+            cache_path = args.cache_dir / f"sts_pair_l{args.layer}_{name}.npz"
             if not cache_path.exists():
                 print(f"  [skip] {name}: {cache_path} 不存在", flush=True)
                 continue
@@ -286,7 +287,7 @@ def main():
         print(f"  seed={seed} dev={dev_sp:.4f} test={test_sp:.4f} ens={ens_sp:.4f} ({time.time()-t0:.1f}s)", flush=True)
 
     # 保存 projection 模型 (供聚类等其他任务使用)
-    proj_save_path = args.cache_dir / f"universal_projection_l{LAYER}.pt"
+    proj_save_path = args.cache_dir / f"universal_projection_l{args.layer}.pt"
     torch.save({
         "seeds": args.seeds,
         "state_dicts": saved_projections,

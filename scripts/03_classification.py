@@ -151,6 +151,9 @@ def main():
     # 2. 加载 state 缓存
     states, hiddens = load_npz(args.cache)
     print(f"  states: {states.shape}", flush=True)
+    # head 数从 state 维度动态推导 (H*N*N), 兼容不同模型 (0.4B=16, 0.1B=12)
+    n_head = states.shape[1] // (HEAD_SIZE * HEAD_SIZE)
+    print(f"  n_head (从 state_dim 推导): {n_head}", flush=True)
     if states.shape[0] != len(labels):
         n = min(states.shape[0], len(labels))
         states, hiddens, labels = states[:n], hiddens[:n], labels[:n]
@@ -179,7 +182,7 @@ def main():
     # 5. Head 筛选 (只用 dev 排序, 不接触 test)
     print(f"\n-- 每个 head 的分类准确率 (用 dev 排序) --", flush=True)
     head_accs = []
-    for h in range(NUM_HEADS):
+    for h in range(n_head):
         X_h_train = extract_head(states_train, h)
         X_h_dev = extract_head(states_dev, h)
         pca = PCA(n_components=min(64, X_h_train.shape[0], X_h_train.shape[1]), random_state=42)

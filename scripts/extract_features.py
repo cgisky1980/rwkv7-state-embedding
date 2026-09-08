@@ -275,7 +275,15 @@ def main():
     parser.add_argument("--max-length", type=int, default=512, help="单序列最大 token 数")
     parser.add_argument("--layer", type=int, default=LAYER, help="提取 WKV state 的层")
     parser.add_argument("--sts-subdir", type=str, default="sts", help="STS 数据子目录 (sts 或 sts_dedup)")
+    parser.add_argument("--model-path", type=str, default="", help="模型 .pth 路径 (默认 0.4B)")
+    parser.add_argument("--out-dir", type=str, default="", help="输出缓存目录 (默认 cache_python，可传独立目录避免覆盖)")
     args = parser.parse_args()
+
+    global MODEL_PATH, OUTPUT_DIR
+    if args.model_path:
+        MODEL_PATH = Path(args.model_path)
+    if args.out_dir:
+        OUTPUT_DIR = Path(args.out_dir)
 
     print("=" * 60, flush=True)
     print("批量并发特征提取 (albatross 官方推理)", flush=True)
