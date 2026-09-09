@@ -1,0 +1,122 @@
+{
+  "model": "rwkv7-g1d-0.1b-proj_universal_projection_fusion_topk8_l11_ins_infonce_ft",
+  "feature": "fusion",
+  "layer": 11,
+  "projection": "C:\\work\\niceui\\rwkv-router\\paper\\cache_python_0.1b_clean_ins\\universal_projection_fusion_topk8_l11_ins_infonce_ft.pt",
+  "tasks": {
+    "HUMESICK-R/test": {
+      "main_score": 0.9170080367777732,
+      "spearman_cosine": 0.9170080367777732,
+      "pearson_cosine": 0.8988845681732416,
+      "spearman_euclidean": 0.9170080367777732
+    },
+    "HUMESTS12/test": {
+      "main_score": 0.8325768170830256,
+      "spearman_cosine": 0.8325768170830256,
+      "pearson_cosine": 0.818696960362642,
+      "spearman_euclidean": 0.8325768170830256
+    },
+    "STS12/test": {
+      "main_score": 0.712449676445272,
+      "spearman_cosine": 0.712449676445272,
+      "pearson_cosine": 0.8219059232195376,
+      "spearman_euclidean": 0.7123362730124788
+    },
+    "STS13/test": {
+      "main_score": 0.8015666334344538,
+      "spearman_cosine": 0.8015666334344538,
+      "pearson_cosine": 0.7862741490466518,
+      "spearman_euclidean": 0.8015439558861993
+    },
+    "STS14/test": {
+      "main_score": 0.7450650400648465,
+      "spearman_cosine": 0.7450650400648465,
+      "pearson_cosine": 0.7731705812086358,
+      "spearman_euclidean": 0.745104332404776
+    },
+    "STS15/test": {
+      "main_score": 0.8146090459487497,
+      "spearman_cosine": 0.8146090459487497,
+      "pearson_cosine": 0.8036448670760704,
+      "spearman_euclidean": 0.8149912254039309
+    },
+    "STS16/test": {
+      "main_score": 0.7539852163938513,
+      "spearman_cosine": 0.7539852163938513,
+      "pearson_cosine": 0.725282567789189,
+      "spearman_euclidean": 0.7541600297155784
+    },
+    "BIOSSES/test": {
+      "main_score": 0.6976664992141042,
+      "spearman_cosine": 0.6976664992141042,
+      "pearson_cosine": 0.7603331435701766,
+      "spearman_euclidean": 0.6976664992141042
+    },
+    "HUMESTSBenchmark/test": {
+      "main_score": 0.7204703187599817,
+      "spearman_cosine": 0.7204703187599817,
+      "pearson_cosine": 0.7203081544388332,
+      "spearman_euclidean": 0.7223460425538162
+    },
+    "STSBenchmark.v2/validation": {
+      "main_score": 0.835588556222807,
+      "spearman_cosine": 0.835588556222807,
+      "pearson_cosine": 0.836277511333158,
+      "spearman_euclidean": 0.8358810891591104
+    },
+    "STSBenchmark.v2/test": {
+      "main_score": 0.7932341107514281,
+      "spearman_cosine": 0.7932341107514281,
+      "pearson_cosine": 0.7986712944766504,
+      "spearman_euclidean": 0.7935895192099705
+    },
+    "SICK-R/test": {
+      "main_score": 0.7507892376120053,
+      "spearman_cosine": 0.7507892376120053,
+      "pearson_cosine": 0.8208669393358218,
+      "spearman_euclidean": 0.7510118445902488
+    },
+    "HUMESTS22/test": {
+      "main_score": 0.7065995609671363,
+      "spearman_cosine": 0.7065995609671363,
+      "pearson_cosine": 0.5460027565990968,
+      "spearman_euclidean": 0.7065995609671363
+    },
+    "IndicCrosslingualSTS/test": {
+      "main_score": 0.06192480248819574,
+      "spearman_cosine": 0.06192480248819574,
+      "pearson_cosine": 0.044381562812853936,
+      "spearman_euclidean": 0.06206133928471422
+    },
+    "STS17/test": {
+      "main_score": 0.4348439856437546,
+      "spearman_cosine": 0.4348439856437546,
+      "pearson_cosine": 0.44165577053582694,
+      "spearman_euclidean": 0.4358903130557778
+    },
+    "STS22.v2/test": {
+      "main_score": 0.3321552382120991,
+      "spearman_cosine": 0.3321552382120991,
+      "pearson_cosine": 0.33133036684845235,
+      "spearman_euclidean": 0.3321552382120991
+    },
+    "STSBenchmarkMultilingualSTS/dev": {
+      "main_score": 0.837506948079245,
+      "spearman_cosine": 0.837506948079245,
+      "pearson_cosine": 0.8374441193583737,
+      "spearman_euclidean": 0.8378518817362314
+    },
+    "STSBenchmarkMultilingualSTS/test": {
+      "main_score": 0.796180381177054,
+      "spearman_cosine": 0.796180381177054,
+      "pearson_cosine": 0.8010646715468962,
+      "spearman_euclidean": 0.796554040392449
+    },
+    "SemRel24STS/test": {
+      "main_score": 0.8002909250505126,
+      "spearman_cosine": 0.8002909250505126,
+      "pearson_cosine": 0.8002963934754992,
+      "spearman_euclidean": 0.8004973049545226
+    }
+  }
+}
